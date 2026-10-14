@@ -14,79 +14,65 @@ Target Supabase project: `https://rpofhzcqcxpuotsebzsq.supabase.co` (project ref
   supabase login                    # if it does not: log in with the owning account (or get invited to its organization)
   ```
 
-## 1. Configure Supabase Auth (dashboard)
+## 1. Automated finish (recommended): `npm run production:finish`
 
-Authentication → **Sign In / Providers**
-- Turn **off** "Allow new users to sign up" (invite-only access).
-- Keep the **Email** provider enabled. Optionally require 12+ character passwords with mixed case and digits (Authentication → Policies / Passwords).
-
-Authentication → **URL Configuration**
-- Site URL: `https://<your-app>.vercel.app` (your production domain).
-- Redirect URLs: `https://<your-app>.vercel.app/**` and, for local development, `http://localhost:3000/**`.
-
-Authentication → **Emails** → templates for *Invite user* and *Reset password*: point the link at the app's confirmation route (token-hash flow, works with server-side sessions):
-
-```html
-<!-- Invite user -->
-<a href="{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=invite&next=/account/password">Accept the invitation</a>
-<!-- Reset password -->
-<a href="{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=recovery&next=/account/password">Reset your password</a>
-```
-
-For production email volume, configure custom SMTP (Authentication → Emails → SMTP settings); the built-in sender is rate-limited.
-
-## 2. Production credentials for the admin CLI
-
-Production values live in `.env.cloud` (git-ignored, excluded from Vercel uploads, mode 600) and are used by prefixing commands with `ENV_FILE=.env.cloud`. Your local `.env.local` is never touched.
-
-- `DATABASE_URL`: Supabase → **Connect** → **Session pooler** (port 5432) URI with the database password. Enter it yourself in the editor; never paste it into chat.
-- `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SECRET_KEY`: Project Settings → API Keys (they can also be written into the file directly from the Supabase CLI without being displayed).
-
-## 3. Inspect, then apply the migrations
+Everything after the migrations is automated and idempotent — no dashboard visits, no database password:
 
 ```bash
-ENV_FILE=.env.cloud npm run db:preflight     # READ-ONLY: existing tables, rows, migration history
-supabase link --project-ref rpofhzcqcxpuotsebzsq
-supabase db push --dry-run                   # lists the migrations that would run
-supabase db push
+supabase login                               # once, as an account with access to the project
+ENV_FILE=.env.cloud npm run production:finish
 ```
 
-Proceed only if the preflight verdict is **EMPTY** or **THIS APP**. If it reports other objects, stop and review them — the migrations only create objects and insert reference data, but they would fail or interleave with an unrelated schema. Never run `supabase db reset --linked` against production.
-
-## 4. Import and validate
+`.env.cloud` (git-ignored, mode 600, excluded from Vercel uploads) needs `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SECRET_KEY` and `NEXT_PUBLIC_SITE_URL`; optionally `ADMIN_EMAIL` (the administrator to provision) and `DATABASE_URL` (only if you prefer a direct connection). The API keys can be written into the file straight from the CLI without displaying them:
 
 ```bash
-ENV_FILE=.env.cloud npm run db:import -- --dry-run
+supabase projects api-keys --project-ref <ref> --reveal -o json   # pipe into the file; never print
+```
+
+| Step | What it does | Re-run behaviour |
+| --- | --- | --- |
+| 1. access | Queries the project through the CLI login; checks the site responds | read-only |
+| 2. auth settings | `site_url`, redirect allow-list (existing entries kept), `disable_signup = true` via `supabase config diff/push` with a temporary config that declares only these keys | pushes only when different |
+| 3. preflight | Read-only inventory: tables, rows, migration history | read-only |
+| 4. import | `db:import --skip-known-files` | files already imported cleanly are skipped |
+| 5. validate | 62 reconciliation checks against the original CSVs | read-only |
+| 6. health | RLS, grants, anon lockdown, demo-account check | read-only |
+| 7. administrator | `ADMIN_EMAIL` gets the admin role (invited first if the account doesn't exist) | no change if already admin |
+| 8. permissions | Temporary admin / analyst / no-role accounts exercise RLS and role checks, then are removed | leaves no accounts |
+| 9. live | Signs in temporary accounts against the deployed site and renders every page, filters, exports and restrictions; scans client bundles for secrets | leaves no accounts |
+
+### Passwordless database transport
+
+Without `DATABASE_URL`, every CLI script (`db:import`, `db:validate`, `db:check`, `db:preflight`, `db:reclassify`, `admin:grant`, `db:smoke`) uses `supabase db query --linked --project-ref <ref>` — the Management API SQL endpoint (beta), authorized by the Supabase CLI login. Notes:
+
+- Each write batch is one `DO` block → atomic; batches are capped at ~400 KB (requests above ~1 MB are rejected by the endpoint).
+- Data travels as typed JSON (`jsonb_to_recordset`) inside dollar-quoted literals whose random delimiter is verified absent from the data; scalar parameters are encoded the same way. SQL text itself is static.
+- SQL containing ticket text is passed through a private temp file (never the command line) and deleted immediately.
+- Transient failures (timeouts, rate limits, gateway errors) are retried; SQL errors are not.
+- Concurrency: an import refuses to start while another run is marked `running` (< 2 h old).
+- `DB_TRANSPORT=postgres|supabase-cli` forces a transport; `SUPABASE_CLI_TARGET=local` points the CLI transport at `supabase start` for rehearsals.
+
+### Auth email links
+
+- Password recovery started from the login page uses Supabase's default email template with the PKCE flow and lands on `/auth/confirm?code=…`.
+- Invitations (`admin:grant --invite`, Settings → Access) land on `/auth/callback`, which removes the tokens from the address bar and exchanges them server-side (`/auth/session`, same-origin only) for the session cookie.
+- Custom templates pointing at `/auth/confirm?token_hash=…&type=…` are also supported.
+
+## 2. Manual equivalents (reference)
+
+```bash
+ENV_FILE=.env.cloud npm run db:preflight
+supabase db push --dry-run && supabase db push      # schema (never `db reset --linked`)
+ENV_FILE=.env.cloud npm run auth:config -- --apply
 ENV_FILE=.env.cloud npm run db:import
-ENV_FILE=.env.cloud npm run db:validate      # expect: 62 checks passed, 0 failed
-ENV_FILE=.env.cloud npm run db:check         # expect: 0 failed
-```
-
-### First administrator
-
-Create the user in the dashboard (Authentication → Users → **Add user** → *Create new user*, "Auto confirm" checked), then:
-
-```bash
-ENV_FILE=.env.cloud npm run admin:grant -- --email you@example.com
-```
-
-or send an invitation instead (needs `SUPABASE_SECRET_KEY` and `NEXT_PUBLIC_SITE_URL` in `.env.cloud`):
-
-```bash
+ENV_FILE=.env.cloud npm run db:validate
+ENV_FILE=.env.cloud npm run db:check
 ENV_FILE=.env.cloud npm run admin:grant -- --email you@example.com --invite
-```
-
-Further users can be invited from **Settings → Access**.
-
-### Permission smoke test
-
-```bash
 ENV_FILE=.env.cloud npm run db:smoke
+ENV_FILE=.env.cloud npm run web:smoke
 ```
 
-Creates temporary admin / analyst / no-role users with random in-memory passwords, verifies anonymous lockdown, disabled sign-up, rejection of the local demo credentials, analyst restrictions, admin access and the per-project counts through the public API, then deletes the temporary users. It refuses to run until a real administrator exists.
-
-## 5. GitHub repository
+## 3. GitHub repository
 
 Repository: <https://github.com/SayedMamdouh94/ischool-cs-tickets-analytics> (branch `main`).
 
@@ -94,7 +80,7 @@ The `.gitignore` excludes `.env*` files (except `.env.example`) and `data/raw/*`
 
 > The repository is currently **public**. It contains code, migrations and documentation only (no student data or credentials), but the documentation includes aggregate operational statistics. Consider making it private (GitHub → Settings → General → Danger Zone → Change visibility); Vercel deploys private repositories normally.
 
-## 6. Link the repository to Vercel
+## 4. Link the repository to Vercel
 
 ```bash
 vercel login                     # if needed
@@ -103,7 +89,7 @@ vercel link                      # create/link the project (framework: Next.js, 
 
 Or in the Vercel dashboard: **Add New → Project → Import** the GitHub repository. Choose a function region close to the Supabase region (Settings → Functions).
 
-## 7. Configure Vercel environment variables
+## 5. Vercel environment variables
 
 | Variable | Environments | Value |
 | --- | --- | --- |
@@ -121,7 +107,7 @@ vercel env add NEXT_PUBLIC_SITE_URL production
 vercel env add SUPABASE_SECRET_KEY production --sensitive
 ```
 
-## 8. Deploy
+## 6. Deploy
 
 ```bash
 npm run verify                   # typecheck, lint, unit tests, production build
@@ -130,7 +116,7 @@ vercel --prod
 
 Pushing to the default branch also deploys automatically once the repository is connected.
 
-## 9. Verify the live dashboard
+## 7. Verify the live dashboard
 
 1. Open the production URL in a private window → you are redirected to `/login`.
 2. `curl -i https://<your-app>.vercel.app/api/export/tickets` → `401`.

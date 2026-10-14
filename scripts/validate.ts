@@ -15,7 +15,7 @@ import { SOURCE_COLUMNS, type SourceColumn } from "@/lib/ingest/columns";
 import { BRIEF_EXPECTED_COUNTS } from "@/lib/ingest/default-projects";
 import { processFile, type ProcessedFile, type ProjectRef } from "@/lib/ingest/file";
 import { median, percentileCont } from "@/lib/analytics/stats";
-import { connect, type Sql } from "./lib/db";
+import { connectDb, type Db } from "./lib/db";
 
 type Level = "PASS" | "FAIL" | "WARN" | "INFO";
 interface Check {
@@ -63,7 +63,12 @@ function round(n: number | null): number | null {
   return n === null ? null : Math.round(n);
 }
 
-async function validateFile(sql: Sql, pf: ProcessedFile): Promise<void> {
+const MISSING_SQL = SOURCE_COLUMNS.map((col) => {
+  const dbCol = DB_COLUMN[col];
+  return `'${col}', ${dbCol === null ? "0" : `count(*) filter (where ${dbCol} is null)::int`}`;
+}).join(",\n      ");
+
+async function validateFile(db: Db, pf: ProcessedFile): Promise<void> {
   const scope = pf.project.code;
   const pid = pf.project.id;
 
@@ -72,16 +77,17 @@ async function validateFile(sql: Sql, pf: ProcessedFile): Promise<void> {
     record(scope, "rows rejected by validation", 0, pf.errors.length, "WARN");
   }
 
-  const dbRows = await sql<{ ticket_id: number; row_hash: string; source_filename: string }[]>`
-    select ticket_id, row_hash, source_filename from public.tickets where project_id = ${pid}
-  `;
+  const dbRows = await db.query<{ ticket_id: number; row_hash: string }>(
+    "select ticket_id::bigint as ticket_id, row_hash from public.tickets where project_id = $1::uuid",
+    [pid],
+  );
   const dbById = new Map(dbRows.map((r) => [Number(r.ticket_id), r]));
   let missing = 0;
   let hashMismatch = 0;
   for (const row of pf.rows) {
-    const db = dbById.get(row.record.ticket_id);
-    if (!db) missing++;
-    else if (db.row_hash !== row.record.row_hash) hashMismatch++;
+    const found = dbById.get(row.record.ticket_id);
+    if (!found) missing++;
+    else if (found.row_hash !== row.record.row_hash) hashMismatch++;
   }
   const fileIds = new Set(pf.rows.map((r) => r.record.ticket_id));
   const extra = dbRows.filter((r) => !fileIds.has(Number(r.ticket_id))).length;
@@ -91,82 +97,63 @@ async function validateFile(sql: Sql, pf: ProcessedFile): Promise<void> {
   record(scope, "row content hash mismatches", 0, hashMismatch);
   record(scope, "database tickets not in this file", 0, extra, extra === 0 ? "PASS" : "WARN");
 
-  // Status counts
-  const statusRows = await sql<{ k: string; n: number }[]>`
-    select coalesce(status, '__none__') as k, count(*)::int as n from public.tickets where project_id = ${pid} group by 1
-  `;
-  record(scope, "status counts", sortedObject(pf.stats.status_counts), sortedObject(Object.fromEntries(statusRows.map((r) => [r.k, r.n]))));
+  // All per-project statistics in one round trip (efficient over the HTTP transport).
+  const [st] = await db.query<{
+    status: Record<string, number> | null;
+    missing: Record<string, number>;
+    anomalies: Record<string, number>;
+    rn: number;
+    rmed: number | null;
+    rp90: number | null;
+    sn: number;
+    smed: number | null;
+    sp90: number | null;
+    att_req: number;
+    att_resp: number;
+    classified: number;
+  }>(
+    `with t as (select * from public.tickets where project_id = $1::uuid)
+     select
+       (select jsonb_object_agg(k, n) from (select coalesce(status, '__none__') as k, count(*)::int as n from t group by 1) s) as status,
+       (select jsonb_build_object(
+      ${MISSING_SQL}) from t) as missing,
+       (select jsonb_build_object(
+          'resolved_before_responded', count(*) filter (where resolved_at < responded_at)::int,
+          'responded_before_created', count(*) filter (where responded_at < created_at)::int,
+          'resolved_before_created', count(*) filter (where resolved_at < created_at)::int,
+          'completed_without_resolved_at', count(*) filter (where status = 'completed' and resolved_at is null)::int,
+          'pending_with_resolved_at', count(*) filter (where status = 'pending' and resolved_at is not null)::int,
+          'responded_equals_resolved', count(*) filter (where responded_at = resolved_at)::int) from t) as anomalies,
+       (select count(*) filter (where response_seconds >= 0)::int from t) as rn,
+       (select round((percentile_cont(0.5) within group (order by response_seconds) filter (where response_seconds >= 0))::numeric)::float8 from t) as rmed,
+       (select round((percentile_cont(0.9) within group (order by response_seconds) filter (where response_seconds >= 0))::numeric)::float8 from t) as rp90,
+       (select count(*) filter (where resolution_seconds >= 0)::int from t) as sn,
+       (select round((percentile_cont(0.5) within group (order by resolution_seconds) filter (where resolution_seconds >= 0))::numeric)::float8 from t) as smed,
+       (select round((percentile_cont(0.9) within group (order by resolution_seconds) filter (where resolution_seconds >= 0))::numeric)::float8 from t) as sp90,
+       (select count(*)::int from public.ticket_attachments a join t on t.ticket_id = a.ticket_id where a.attachment_type = 'request') as att_req,
+       (select count(*)::int from public.ticket_attachments a join t on t.ticket_id = a.ticket_id where a.attachment_type = 'response') as att_resp,
+       (select count(*)::int from public.ticket_classifications c join t on t.ticket_id = c.ticket_id where c.is_current) as classified`,
+    [pid],
+  );
 
-  // Missing values per field
+  record(scope, "status counts", sortedObject(pf.stats.status_counts), sortedObject(st.status ?? {}));
   const fileMissing: Record<string, number> = {};
   const dbMissing: Record<string, number> = {};
   for (const col of SOURCE_COLUMNS) {
-    const dbCol = DB_COLUMN[col];
     fileMissing[col] = pf.stats.missing[col];
-    if (dbCol === null) {
-      dbMissing[col] = 0;
-      continue;
-    }
-    const [{ n }] = await sql<{ n: number }[]>`
-      select count(*)::int as n from public.tickets where project_id = ${pid} and ${sql(dbCol)} is null
-    `;
-    dbMissing[col] = n;
+    dbMissing[col] = Number(st.missing[col]);
   }
   record(scope, "missing values per field", fileMissing, dbMissing);
-
-  // Anomalies
-  const [a] = await sql<Record<string, number>[]>`
-    select
-      count(*) filter (where resolved_at < responded_at)::int as resolved_before_responded,
-      count(*) filter (where responded_at < created_at)::int as responded_before_created,
-      count(*) filter (where resolved_at < created_at)::int as resolved_before_created,
-      count(*) filter (where status = 'completed' and resolved_at is null)::int as completed_without_resolved_at,
-      count(*) filter (where status = 'pending' and resolved_at is not null)::int as pending_with_resolved_at,
-      count(*) filter (where responded_at = resolved_at)::int as responded_equals_resolved
-    from public.tickets where project_id = ${pid}
-  `;
-  record(scope, "timestamp anomalies", sortedObject(pf.stats.anomalies), sortedObject(a));
+  record(scope, "timestamp anomalies", sortedObject(pf.stats.anomalies), sortedObject(st.anomalies));
 
   // Durations: recompute from the file in TypeScript, compare with SQL.
-  const resp = pf.rows.filter((r) => r.respondedEpochMs !== null).map((r) => (r.respondedEpochMs! - r.createdEpochMs) / 1000).filter((s) => s >= 0);
-  const reso = pf.rows.filter((r) => r.resolvedEpochMs !== null).map((r) => (r.resolvedEpochMs! - r.createdEpochMs) / 1000).filter((s) => s >= 0);
-  const [d] = await sql<{ rn: number; rmed: number | null; rp90: number | null; sn: number; smed: number | null; sp90: number | null }[]>`
-    select
-      count(*) filter (where response_seconds >= 0)::int as rn,
-      round((percentile_cont(0.5) within group (order by response_seconds) filter (where response_seconds >= 0))::numeric)::float8 as rmed,
-      round((percentile_cont(0.9) within group (order by response_seconds) filter (where response_seconds >= 0))::numeric)::float8 as rp90,
-      count(*) filter (where resolution_seconds >= 0)::int as sn,
-      round((percentile_cont(0.5) within group (order by resolution_seconds) filter (where resolution_seconds >= 0))::numeric)::float8 as smed,
-      round((percentile_cont(0.9) within group (order by resolution_seconds) filter (where resolution_seconds >= 0))::numeric)::float8 as sp90
-    from public.tickets where project_id = ${pid}
-  `;
-  record(
-    scope,
-    "recorded response duration (n, median s, p90 s)",
-    [resp.length, round(median(resp)), round(percentileCont(resp, 0.9))],
-    [d.rn, d.rmed, d.rp90],
-  );
-  record(
-    scope,
-    "resolution duration (n, median s, p90 s)",
-    [reso.length, round(median(reso)), round(percentileCont(reso, 0.9))],
-    [d.sn, d.smed, d.sp90],
-  );
-
-  const [att] = await sql<{ req: number; resp: number }[]>`
-    select count(*) filter (where a.attachment_type = 'request')::int as req,
-           count(*) filter (where a.attachment_type = 'response')::int as resp
-    from public.ticket_attachments a join public.tickets t on t.ticket_id = a.ticket_id
-    where t.project_id = ${pid}
-  `;
-  record(scope, "attachment references (request, response)", [pf.stats.attachments.request, pf.stats.attachments.response], [att.req, att.resp]);
-
-  const [cls] = await sql<{ n: number }[]>`
-    select count(*)::int as n from public.ticket_classifications c join public.tickets t on t.ticket_id = c.ticket_id
-    where t.project_id = ${pid} and c.is_current
-  `;
-  record(scope, "current classifications", pf.stats.accepted, cls.n);
-
+  const resp = pf.rows.filter((r) => r.respondedEpochMs !== null).map((r) => (r.respondedEpochMs! - r.createdEpochMs) / 1000).filter((x) => x >= 0);
+  const reso = pf.rows.filter((r) => r.resolvedEpochMs !== null).map((r) => (r.resolvedEpochMs! - r.createdEpochMs) / 1000).filter((x) => x >= 0);
+  const num = (v: number | null) => (v === null ? null : Number(v));
+  record(scope, "recorded response duration (n, median s, p90 s)", [resp.length, round(median(resp)), round(percentileCont(resp, 0.9))], [Number(st.rn), num(st.rmed), num(st.rp90)]);
+  record(scope, "resolution duration (n, median s, p90 s)", [reso.length, round(median(reso)), round(percentileCont(reso, 0.9))], [Number(st.sn), num(st.smed), num(st.sp90)]);
+  record(scope, "attachment references (request, response)", [pf.stats.attachments.request, pf.stats.attachments.response], [Number(st.att_req), Number(st.att_resp)]);
+  record(scope, "current classifications", pf.stats.accepted, Number(st.classified));
   record(scope, "timestamp offsets inconsistent with Africa/Cairo", 0, pf.stats.offset_mismatches_vs_cairo, pf.stats.offset_mismatches_vs_cairo === 0 ? "PASS" : "WARN");
 
   const expected = BRIEF_EXPECTED_COUNTS[pf.project.code];
@@ -184,35 +171,36 @@ async function main(): Promise<number> {
     return 1;
   }
 
-  const { sql, target } = connect({ max: 2 });
-  console.log(`Validating ${files.length} file(s) against ${target}\n`);
+  const db = connectDb();
+  console.log(`Validating ${files.length} file(s) against ${db.target} [${db.kind}]\n`);
   try {
-    const projects = await sql<ProjectRef[]>`select id, code, name, organization_id, file_name_hint from public.projects`;
+    const projects = await db.query<ProjectRef>(
+      "select id::text as id, code, name, organization_id::int as organization_id, file_name_hint from public.projects",
+    );
     let fileTotal = 0;
     const allIds = new Set<number>();
     for (const f of files) {
       const pf = processFile(f, readFileSync(path.join(dir, f)), projects);
       fileTotal += pf.stats.accepted;
       for (const r of pf.rows) allIds.add(r.record.ticket_id);
-      await validateFile(sql, pf);
+      await validateFile(db, pf);
     }
-    const [{ total, distinct_ids }] = await sql<{ total: number; distinct_ids: number }[]>`
-      select count(*)::int as total, count(distinct ticket_id)::int as distinct_ids from public.tickets
-    `;
+    const [{ total, distinct_ids }] = await db.query<{ total: number; distinct_ids: number }>(
+      "select count(*)::int as total, count(distinct ticket_id)::int as distinct_ids from public.tickets",
+    );
     record("ALL", "total tickets (files vs database)", fileTotal, total);
     record("ALL", "unique ticket IDs across files", fileTotal, allIds.size);
     record("ALL", "unique ticket IDs in database", total, distinct_ids);
     const briefTotal = Object.values(BRIEF_EXPECTED_COUNTS).reduce((a, b) => a + b, 0);
     record("ALL", "total vs. project brief (initial export)", briefTotal, total, briefTotal === total ? "PASS" : "WARN");
 
-    const [runs] = await sql<{ failed: number; running: number }[]>`
-      select count(*) filter (where status = 'failed')::int as failed, count(*) filter (where status = 'running')::int as running
-      from public.import_runs
-    `;
+    const [runs] = await db.query<{ failed: number; running: number }>(
+      "select count(*) filter (where status = 'failed')::int as failed, count(*) filter (where status = 'running')::int as running from public.import_runs",
+    );
     record("ALL", "import runs still running", 0, runs.running);
     record("ALL", "failed import runs (history)", 0, runs.failed, runs.failed === 0 ? "PASS" : "WARN");
   } finally {
-    await sql.end({ timeout: 5 });
+    await db.end();
   }
 
   const width = Math.max(...checks.map((c) => c.name.length));

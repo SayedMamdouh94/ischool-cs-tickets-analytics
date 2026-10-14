@@ -5,9 +5,12 @@
  *   npm run db:import -- --file "<path>"    # import specific file(s)
  *   npm run db:import -- --dry-run          # parse + validate only, no writes
  *   npm run db:import -- --force-update     # apply rows even from older exports
+ *   npm run db:import -- --skip-known-files # skip files already imported cleanly (same SHA-256)
  *
+ * Transport (see scripts/lib/db.ts): a direct connection when DATABASE_URL is
+ * set, otherwise the passwordless Supabase CLI / Management API transport.
  * Idempotent: re-running the same files inserts nothing and updates nothing.
- * Message contents are never printed to the console.
+ * Message contents are never printed.
  */
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
@@ -16,47 +19,52 @@ import { IMPORTER_VERSION, UPDATE_POLICY } from "@/lib/ingest/columns";
 import { DEFAULT_PROJECTS } from "@/lib/ingest/default-projects";
 import { CsvStructureError, ProjectMappingError, processFile, sha256, type ProcessedFile, type ProjectRef } from "@/lib/ingest/file";
 import type { RowError, TransformedRow } from "@/lib/ingest/transform";
-import { IMPORT_LOCK_KEY, connect, withRetry, type Sql } from "./lib/db";
-import { loadCategoryCatalog, writeClassifications, type CategoryCatalog } from "./lib/classify-db";
+import { CLI_MAX_SQL_BYTES, connectDb, jsonLiteral, sqlLiteral, withRetry, type Db } from "./lib/db";
+import { classificationRows, classificationStatements, loadCategoryCatalog, type CategoryCatalog } from "./lib/classify-db";
 import { optionalEnv } from "./lib/env";
 
-const TICKET_COLUMNS = [
-  "ticket_id",
-  "project_id",
-  "organization_id",
-  "topic",
-  "message",
-  "status",
-  "priority",
-  "department",
-  "owner_type",
-  "owner_id",
-  "affected_student_id",
-  "created_at",
-  "responded_at",
-  "resolved_at",
-  "response",
-  "note",
-  "responder_name",
-  "resolved_by",
-  "attachment_urls",
-  "response_attachment_urls",
-  "sub_topic",
-  "session_ref",
-  "lesson_name",
-  "message_language",
-  "parser_version",
-  "source_filename",
-  "source_row_number",
-  "source_data_as_of",
-  "row_hash",
-  "first_import_run_id",
-  "last_import_run_id",
-] as const;
+const IMPORT_LOCK_KEY = "cs-tickets-analytics:import";
 
-/** Columns refreshed on update. first_import_run_id / imported_at are preserved. */
-const UPDATE_COLUMNS = TICKET_COLUMNS.filter((c) => !["ticket_id", "first_import_run_id"].includes(c));
-const UPDATE_SET = UPDATE_COLUMNS.map((c) => `${c} = excluded.${c}`).join(", ");
+/** Columns written from a source row; jsonb_to_recordset column definitions. */
+const TICKET_COLUMNS: [string, string][] = [
+  ["ticket_id", "bigint"],
+  ["project_id", "uuid"],
+  ["organization_id", "int"],
+  ["topic", "text"],
+  ["message", "text"],
+  ["status", "text"],
+  ["priority", "text"],
+  ["department", "text"],
+  ["owner_type", "text"],
+  ["owner_id", "text"],
+  ["affected_student_id", "text"],
+  ["created_at", "timestamptz"],
+  ["responded_at", "timestamptz"],
+  ["resolved_at", "timestamptz"],
+  ["response", "text"],
+  ["note", "text"],
+  ["responder_name", "text"],
+  ["resolved_by", "text"],
+  ["attachment_urls", "text"],
+  ["response_attachment_urls", "text"],
+  ["sub_topic", "text"],
+  ["session_ref", "text"],
+  ["lesson_name", "text"],
+  ["message_language", "text"],
+  ["parser_version", "text"],
+  ["source_filename", "text"],
+  ["source_row_number", "int"],
+  ["source_data_as_of", "timestamptz"],
+  ["row_hash", "text"],
+  ["first_import_run_id", "uuid"],
+  ["last_import_run_id", "uuid"],
+];
+const COLS = TICKET_COLUMNS.map(([c]) => c).join(", ");
+const RECORDSET = TICKET_COLUMNS.map(([c, t]) => `${c} ${t}`).join(", ");
+/** first_import_run_id and imported_at are preserved on update. */
+const UPDATE_SET = TICKET_COLUMNS.filter(([c]) => c !== "ticket_id" && c !== "first_import_run_id")
+  .map(([c]) => `${c} = excluded.${c}`)
+  .join(", ");
 
 interface Counts {
   inserted: number;
@@ -69,11 +77,13 @@ interface Counts {
 interface FileOutcome {
   file: string;
   project: string;
-  status: "completed" | "completed_with_errors" | "failed" | "dry-run";
+  status: "completed" | "completed_with_errors" | "failed" | "dry-run" | "skipped (already imported)";
   records: number;
   counts: Counts;
   error?: string;
 }
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function parseCli() {
   const { values } = parseArgs({
@@ -82,7 +92,7 @@ function parseCli() {
       file: { type: "string", multiple: true },
       "dry-run": { type: "boolean", default: false },
       "force-update": { type: "boolean", default: false },
-      "batch-size": { type: "string", default: "500" },
+      "skip-known-files": { type: "boolean", default: false },
       help: { type: "boolean", default: false },
     },
     allowPositionals: false,
@@ -91,9 +101,7 @@ function parseCli() {
 }
 
 function discoverFiles(dir: string, explicit: string[] | undefined): string[] {
-  if (explicit && explicit.length > 0) {
-    return explicit.map((f) => path.resolve(f));
-  }
+  if (explicit && explicit.length > 0) return explicit.map((f) => path.resolve(f));
   const full = path.resolve(dir);
   let entries: string[];
   try {
@@ -105,131 +113,6 @@ function discoverFiles(dir: string, explicit: string[] | undefined): string[] {
     .filter((f) => f.toLowerCase().endsWith(".csv"))
     .sort()
     .map((f) => path.join(full, f));
-}
-
-function errorRow(runId: string, e: RowError) {
-  return {
-    import_run_id: runId,
-    source_row_number: e.rowNumber,
-    ticket_id: e.ticketId,
-    error_code: e.code,
-    validation_error: `line ${e.line}: ${e.message}`,
-    raw_row: e.raw,
-  };
-}
-
-async function insertErrors(sql: Sql, rows: ReturnType<typeof errorRow>[]): Promise<void> {
-  for (let i = 0; i < rows.length; i += 500) {
-    const chunk = rows.slice(i, i + 500);
-    await withRetry("insert import_errors", () =>
-      sql`insert into public.import_errors ${sql(chunk, "import_run_id", "source_row_number", "ticket_id", "error_code", "validation_error", "raw_row")}`,
-    );
-  }
-}
-
-async function processBatch(
-  sql: Sql,
-  catalog: CategoryCatalog,
-  runId: string,
-  file: ProcessedFile,
-  batch: TransformedRow[],
-  forceUpdate: boolean,
-): Promise<Counts> {
-  return withRetry(`batch @row ${batch[0].record.source_row_number}`, () =>
-    sql.begin(async (tx) => {
-      const counts: Counts = { inserted: 0, updated: 0, unchanged: 0, stale: 0, rejected: 0 };
-      const ids = batch.map((r) => r.record.ticket_id);
-      const existing = await tx<{ ticket_id: number; project_id: string; row_hash: string; source_data_as_of: Date }[]>`
-        select ticket_id, project_id, row_hash, source_data_as_of
-        from public.tickets
-        where ticket_id = any(${ids}::bigint[])
-      `;
-      const byId = new Map(existing.map((e) => [Number(e.ticket_id), e]));
-      const dataAsOf = new Date(file.stats.data_as_of!);
-
-      const toWrite: TransformedRow[] = [];
-      const writeKinds = new Map<number, "insert" | "update">();
-      const collisions: RowError[] = [];
-
-      for (const row of batch) {
-        const prev = byId.get(row.record.ticket_id);
-        if (!prev) {
-          toWrite.push(row);
-          writeKinds.set(row.record.ticket_id, "insert");
-        } else if (prev.project_id !== file.project.id) {
-          collisions.push({
-            rowNumber: row.record.source_row_number,
-            line: 0,
-            ticketId: row.record.ticket_id,
-            code: "TICKET_ID_COLLISION",
-            message: `Ticket ${row.record.ticket_id} already exists in another project (${prev.project_id}); refusing to overwrite it from ${file.project.code}.`,
-            raw: {} as RowError["raw"],
-          });
-        } else if (prev.row_hash === row.record.row_hash) {
-          counts.unchanged++;
-        } else if (!forceUpdate && dataAsOf.getTime() < new Date(prev.source_data_as_of).getTime()) {
-          counts.stale++;
-        } else {
-          toWrite.push(row);
-          writeKinds.set(row.record.ticket_id, "update");
-        }
-      }
-
-      if (toWrite.length > 0) {
-        const rows = toWrite.map((r) => ({
-          ...r.record,
-          project_id: file.project.id,
-          source_filename: file.fileName,
-          source_data_as_of: file.stats.data_as_of,
-          first_import_run_id: runId,
-          last_import_run_id: runId,
-        }));
-        await tx`
-          insert into public.tickets ${tx(rows, ...TICKET_COLUMNS)}
-          on conflict (ticket_id) do update set ${tx.unsafe(UPDATE_SET)}, updated_at = now()
-          where public.tickets.project_id = excluded.project_id
-        `;
-        const changedIds = toWrite.map((r) => r.record.ticket_id);
-        await tx`delete from public.ticket_attachments where ticket_id = any(${changedIds}::bigint[])`;
-        const attachments = toWrite.flatMap((r) =>
-          r.attachments.map((a) => ({
-            ticket_id: r.record.ticket_id,
-            attachment_type: a.attachmentType,
-            position: a.position,
-            url: a.url,
-            url_host: a.host,
-            file_name: a.fileName,
-            file_extension: a.extension,
-          })),
-        );
-        if (attachments.length > 0) {
-          await tx`
-            insert into public.ticket_attachments ${tx(attachments, "ticket_id", "attachment_type", "position", "url", "url_host", "file_name", "file_extension")}
-          `;
-        }
-        await writeClassifications(
-          tx,
-          catalog,
-          toWrite.map((r) => ({ ticketId: r.record.ticket_id, topic: r.record.topic, details: r.details })),
-        );
-        for (const kind of writeKinds.values()) {
-          if (kind === "insert") counts.inserted++;
-          else counts.updated++;
-        }
-      }
-
-      if (collisions.length > 0) {
-        // Keep the payload for investigation (admin-only table).
-        const withRaw = collisions.map((c) => {
-          const src = batch.find((b) => b.record.ticket_id === c.ticketId)!;
-          return { ...c, raw: rawFromRecord(src) };
-        });
-        await tx`insert into public.import_errors ${tx(withRaw.map((c) => errorRow(runId, c)), "import_run_id", "source_row_number", "ticket_id", "error_code", "validation_error", "raw_row")}`;
-        counts.rejected += collisions.length;
-      }
-      return counts;
-    }),
-  );
 }
 
 /** Reconstructs a raw-row payload for errors detected after transformation. */
@@ -258,6 +141,125 @@ function rawFromRecord(row: TransformedRow): RowError["raw"] {
   };
 }
 
+function errorRow(runId: string, e: RowError) {
+  return {
+    import_run_id: runId,
+    source_row_number: e.rowNumber,
+    ticket_id: e.ticketId,
+    error_code: e.code,
+    validation_error: e.line > 0 ? `line ${e.line}: ${e.message}` : e.message,
+    raw_row: e.raw,
+  };
+}
+
+function errorInsertStatement(rows: ReturnType<typeof errorRow>[]): string {
+  if (rows.length === 0) return "";
+  return `
+insert into public.import_errors (import_run_id, source_row_number, ticket_id, error_code, validation_error, raw_row)
+select import_run_id, source_row_number, ticket_id, error_code, validation_error, raw_row
+  from jsonb_to_recordset(${jsonLiteral(rows)}) as e(import_run_id uuid, source_row_number int, ticket_id bigint, error_code text, validation_error text, raw_row jsonb);
+`;
+}
+
+/** Splits items into chunks whose JSON stays under a byte budget. */
+function chunkBySize<T>(items: T[], maxBytes: number, maxItems: number): T[][] {
+  const chunks: T[][] = [];
+  let current: T[] = [];
+  let size = 0;
+  for (const item of items) {
+    const s = Buffer.byteLength(JSON.stringify(item));
+    if (current.length > 0 && (size + s > maxBytes || current.length >= maxItems)) {
+      chunks.push(current);
+      current = [];
+      size = 0;
+    }
+    current.push(item);
+    size += s;
+  }
+  if (current.length > 0) chunks.push(current);
+  return chunks;
+}
+
+async function insertErrors(db: Db, rows: ReturnType<typeof errorRow>[]): Promise<void> {
+  for (const chunk of chunkBySize(rows, CLI_MAX_SQL_BYTES * 0.6, 500)) {
+    await withRetry("insert import_errors", () => db.script(errorInsertStatement(chunk)));
+  }
+}
+
+interface Existing {
+  project_id: string;
+  row_hash: string;
+  as_of_epoch: number;
+}
+
+async function prefetchExisting(db: Db, ids: number[]): Promise<Map<number, Existing>> {
+  const out = new Map<number, Existing>();
+  for (let i = 0; i < ids.length; i += 4000) {
+    const chunk = ids.slice(i, i + 4000);
+    const rows = await withRetry("prefetch existing tickets", () =>
+      db.query<{ ticket_id: number; project_id: string; row_hash: string; as_of_epoch: number }>(
+        `select ticket_id::bigint as ticket_id, project_id::text as project_id, row_hash,
+                extract(epoch from source_data_as_of)::float8 as as_of_epoch
+           from public.tickets
+          where ticket_id in (select (jsonb_array_elements_text($1::jsonb))::bigint)`,
+        [chunk],
+      ),
+    );
+    for (const r of rows) out.set(Number(r.ticket_id), { project_id: r.project_id, row_hash: r.row_hash, as_of_epoch: Number(r.as_of_epoch) });
+  }
+  return out;
+}
+
+/**
+ * One atomic write for a batch: upsert tickets (guarded so a ticket can never
+ * move between projects and older exports never overwrite newer data), then
+ * replace attachments and classifications ONLY for tickets that now hold
+ * exactly the incoming source row.
+ */
+function batchScript(projectId: string, rows: TransformedRow[], records: Record<string, unknown>[], catalog: CategoryCatalog, forceUpdate: boolean): string {
+  const pid = sqlLiteral(projectId);
+  const keys = rows.map((r) => ({ ticket_id: r.record.ticket_id, row_hash: r.record.row_hash }));
+  const attachments = rows.flatMap((r) =>
+    r.attachments.map((a) => ({
+      ticket_id: r.record.ticket_id,
+      row_hash: r.record.row_hash,
+      attachment_type: a.attachmentType,
+      position: a.position,
+      url: a.url,
+      url_host: a.host,
+      file_name: a.fileName,
+      file_extension: a.extension,
+    })),
+  );
+  const classifications = classificationRows(
+    catalog,
+    rows.map((r) => ({ ticketId: r.record.ticket_id, topic: r.record.topic, details: r.details, rowHash: r.record.row_hash })),
+  );
+  return `
+insert into public.tickets (${COLS})
+select ${COLS} from jsonb_to_recordset(${jsonLiteral(records)}) as r(${RECORDSET})
+on conflict (ticket_id) do update set ${UPDATE_SET}, updated_at = now()
+where public.tickets.project_id = excluded.project_id
+  and public.tickets.row_hash is distinct from excluded.row_hash
+  ${forceUpdate ? "" : "and excluded.source_data_as_of >= public.tickets.source_data_as_of"};
+
+delete from public.ticket_attachments a
+ using jsonb_to_recordset(${jsonLiteral(keys)}) as k(ticket_id bigint, row_hash text), public.tickets t
+ where a.ticket_id = k.ticket_id and t.ticket_id = k.ticket_id and t.row_hash = k.row_hash and t.project_id = ${pid}::uuid;
+${
+  attachments.length === 0
+    ? ""
+    : `
+insert into public.ticket_attachments (ticket_id, attachment_type, position, url, url_host, file_name, file_extension)
+select x.ticket_id, x.attachment_type, x.position, x.url, x.url_host, x.file_name, x.file_extension
+  from jsonb_to_recordset(${jsonLiteral(attachments)}) as x(ticket_id bigint, row_hash text, attachment_type text, position smallint, url text, url_host text, file_name text, file_extension text)
+  join public.tickets t on t.ticket_id = x.ticket_id and t.row_hash = x.row_hash and t.project_id = ${pid}::uuid;
+`
+}
+${classificationStatements(classifications)}
+`;
+}
+
 function pad(value: string | number, width: number): string {
   const s = String(value);
   return s.length >= width ? s : s + " ".repeat(width - s.length);
@@ -265,123 +267,121 @@ function pad(value: string | number, width: number): string {
 
 function printSummary(outcomes: FileOutcome[]): void {
   console.log("\nImport summary");
-  console.log(
-    `${pad("File", 40)} ${pad("Project", 12)} ${pad("Rows", 6)} ${pad("Ins", 6)} ${pad("Upd", 6)} ${pad("Same", 6)} ${pad("Stale", 6)} ${pad("Rej", 5)} Status`,
-  );
+  console.log(`${pad("File", 40)} ${pad("Project", 12)} ${pad("Rows", 6)} ${pad("Ins", 6)} ${pad("Upd", 6)} ${pad("Same", 6)} ${pad("Stale", 6)} ${pad("Rej", 5)} Status`);
   for (const o of outcomes) {
     console.log(
       `${pad(o.file.slice(0, 39), 40)} ${pad(o.project, 12)} ${pad(o.records, 6)} ${pad(o.counts.inserted, 6)} ${pad(o.counts.updated, 6)} ${pad(o.counts.unchanged, 6)} ${pad(o.counts.stale, 6)} ${pad(o.counts.rejected, 5)} ${o.status}${o.error ? ` — ${o.error}` : ""}`,
     );
   }
-  const total = outcomes.reduce(
-    (acc, o) => ({
-      records: acc.records + o.records,
-      inserted: acc.inserted + o.counts.inserted,
-      updated: acc.updated + o.counts.updated,
-      unchanged: acc.unchanged + o.counts.unchanged,
-      stale: acc.stale + o.counts.stale,
-      rejected: acc.rejected + o.counts.rejected,
-    }),
-    { records: 0, inserted: 0, updated: 0, unchanged: 0, stale: 0, rejected: 0 },
+  const t = outcomes.reduce(
+    (a, o) => ({ r: a.r + o.records, i: a.i + o.counts.inserted, u: a.u + o.counts.updated, s: a.s + o.counts.unchanged, st: a.st + o.counts.stale, rj: a.rj + o.counts.rejected }),
+    { r: 0, i: 0, u: 0, s: 0, st: 0, rj: 0 },
   );
-  console.log(
-    `${pad("TOTAL", 40)} ${pad("", 12)} ${pad(total.records, 6)} ${pad(total.inserted, 6)} ${pad(total.updated, 6)} ${pad(total.unchanged, 6)} ${pad(total.stale, 6)} ${pad(total.rejected, 5)}`,
-  );
+  console.log(`${pad("TOTAL", 40)} ${pad("", 12)} ${pad(t.r, 6)} ${pad(t.i, 6)} ${pad(t.u, 6)} ${pad(t.s, 6)} ${pad(t.st, 6)} ${pad(t.rj, 5)}`);
+}
+
+async function dryRun(files: string[]): Promise<number> {
+  let projects: ProjectRef[] = DEFAULT_PROJECTS;
+  let source = "built-in project list (offline)";
+  if (optionalEnv("DATABASE_URL") || optionalEnv("DB_TRANSPORT") || optionalEnv("NEXT_PUBLIC_SUPABASE_URL")?.includes(".supabase.co")) {
+    const db = connectDb();
+    try {
+      projects = await db.query<ProjectRef>("select id::text as id, code, name, organization_id::int as organization_id, file_name_hint from public.projects");
+      source = `database (${db.target})`;
+    } finally {
+      await db.end();
+    }
+  }
+  console.log(`Dry run — no data will be written. Projects from: ${source}\n`);
+  const outcomes: FileOutcome[] = [];
+  for (const f of files) {
+    const name = path.basename(f);
+    try {
+      const pf = processFile(name, readFileSync(f), projects);
+      outcomes.push({ file: name, project: pf.project.code, status: "dry-run", records: pf.stats.records_in_file, counts: { inserted: pf.rows.length, updated: 0, unchanged: 0, stale: 0, rejected: pf.errors.length } });
+      for (const e of pf.errors.slice(0, 20)) console.log(`  ✗ ${name} row ${e.rowNumber} (line ${e.line}) ${e.code}: ${e.message}`);
+    } catch (err) {
+      outcomes.push({ file: name, project: "-", status: "failed", records: 0, counts: { inserted: 0, updated: 0, unchanged: 0, stale: 0, rejected: 0 }, error: (err as Error).message });
+    }
+  }
+  printSummary(outcomes);
+  console.log("\n(Dry run: 'Ins' = valid rows that would be considered for insert/update.)");
+  return outcomes.some((o) => o.status === "failed") ? 1 : 0;
 }
 
 async function main(): Promise<number> {
   const args = parseCli();
   if (args.help) {
-    console.log("Usage: npm run db:import -- [--dir data/raw] [--file <csv> ...] [--dry-run] [--force-update] [--batch-size 500]");
+    console.log("Usage: npm run db:import -- [--dir data/raw] [--file <csv> ...] [--dry-run] [--force-update]");
     return 0;
   }
-  const batchSize = Math.min(Math.max(Number(args["batch-size"]) || 500, 50), 1000);
   const files = discoverFiles(args.dir!, args.file);
   if (files.length === 0) {
-    console.error("No CSV files found. Place the four ticket exports in data/raw/ and re-run.");
+    console.error("No CSV files found. Place the ticket exports in data/raw/ and re-run.");
     return 1;
   }
+  if (args["dry-run"]) return dryRun(files);
 
-  // ---------------------------------------------------------------- dry run
-  if (args["dry-run"]) {
-    let projects: ProjectRef[] = DEFAULT_PROJECTS;
-    let source = "built-in project list (offline)";
-    if (optionalEnv("DATABASE_URL")) {
-      const { sql } = connect();
-      try {
-        projects = await sql<ProjectRef[]>`select id, code, name, organization_id, file_name_hint from public.projects`;
-        source = "database";
-      } finally {
-        await sql.end({ timeout: 5 });
-      }
-    }
-    console.log(`Dry run — no data will be written. Projects from: ${source}\n`);
-    const outcomes: FileOutcome[] = [];
-    for (const f of files) {
-      const name = path.basename(f);
-      try {
-        const pf = processFile(name, readFileSync(f), projects);
-        outcomes.push({
-          file: name,
-          project: pf.project.code,
-          status: "dry-run",
-          records: pf.stats.records_in_file,
-          counts: { inserted: pf.rows.length, updated: 0, unchanged: 0, stale: 0, rejected: pf.errors.length },
-        });
-        for (const e of pf.errors.slice(0, 20)) console.log(`  ✗ ${name} row ${e.rowNumber} (line ${e.line}) ${e.code}: ${e.message}`);
-      } catch (err) {
-        outcomes.push({ file: name, project: "-", status: "failed", records: 0, counts: { inserted: 0, updated: 0, unchanged: 0, stale: 0, rejected: 0 }, error: (err as Error).message });
-      }
-    }
-    printSummary(outcomes);
-    console.log("\n(Dry run: 'Ins' = valid rows that would be considered for insert/update.)");
-    return outcomes.some((o) => o.status === "failed") ? 1 : 0;
-  }
-
-  // ---------------------------------------------------------------- import
-  const { sql, target } = connect({ max: 1 });
-  console.log(`Importing ${files.length} file(s) into ${target}`);
+  const forceUpdate = Boolean(args["force-update"]);
+  const db = connectDb();
+  console.log(`Importing ${files.length} file(s) into ${db.target} [${db.kind}]`);
   const outcomes: FileOutcome[] = [];
+  let locked = false;
 
   try {
-    const [{ locked }] = await sql<{ locked: boolean }[]>`select pg_try_advisory_lock(hashtext(${IMPORT_LOCK_KEY})) as locked`;
-    if (!locked) {
-      console.error("Another import is running (advisory lock held). Aborting.");
+    // Concurrency guard. The postgres transport also takes a session lock; the
+    // HTTP transport relies on the import_runs table.
+    if (db.kind === "postgres") {
+      const [{ ok }] = await db.query<{ ok: boolean }>("select pg_try_advisory_lock(hashtext($1)) as ok", [IMPORT_LOCK_KEY]);
+      if (!ok) {
+        console.error("Another import is running (advisory lock held). Aborting.");
+        return 1;
+      }
+      locked = true;
+    }
+    const active = await db.query<{ n: number }>(
+      "select count(*)::int as n from public.import_runs where status = 'running' and started_at > now() - interval '2 hours'",
+    );
+    if (Number(active[0]?.n ?? 0) > 0 && db.kind !== "postgres") {
+      console.error("An import started less than 2 hours ago is still marked running. Aborting to avoid concurrent imports.");
       return 1;
     }
-
-    const abandoned = await sql`
-      update public.import_runs
-         set status = 'failed', completed_at = now(),
-             error_summary = coalesce(error_summary, 'Abandoned: the importer stopped before completing this run.')
-       where status = 'running'
-      returning id
-    `;
+    const abandoned = await db.query<{ id: string }>(
+      `update public.import_runs set status = 'failed', completed_at = now(),
+              error_summary = coalesce(error_summary, 'Abandoned: the importer stopped before completing this run.')
+        where status = 'running' returning id::text as id`,
+    );
     if (abandoned.length > 0) console.warn(`Marked ${abandoned.length} abandoned run(s) as failed.`);
 
-    const projects = await sql<ProjectRef[]>`select id, code, name, organization_id, file_name_hint from public.projects`;
-    const catalog = await loadCategoryCatalog(sql);
+    const projects = await db.query<ProjectRef>("select id::text as id, code, name, organization_id::int as organization_id, file_name_hint from public.projects");
+    const catalog = await loadCategoryCatalog(db);
     const seenInRun = new Map<number, { projectId: string; file: string }>();
 
     for (const f of files) {
       const name = path.basename(f);
       const buffer = readFileSync(f);
       const size = statSync(f).size;
-      const counts: Counts = { inserted: 0, updated: 0, unchanged: 0, stale: 0, rejected: 0 };
       const fileHash = sha256(buffer);
+      const counts: Counts = { inserted: 0, updated: 0, unchanged: 0, stale: 0, rejected: 0 };
 
-      const [prior] = await sql<{ id: string }[]>`
-        select id from public.import_runs
-        where file_hash = ${fileHash} and status in ('completed', 'completed_with_errors')
-        order by completed_at desc limit 1
-      `;
-      const [run] = await sql<{ id: string }[]>`
-        insert into public.import_runs
-          (source_filename, file_hash, file_size_bytes, update_policy, importer_version, duplicate_of_run_id)
-        values (${name}, ${fileHash}, ${size}, ${UPDATE_POLICY}, ${IMPORTER_VERSION}, ${prior?.id ?? null})
-        returning id
-      `;
+      const [prior] = await db.query<{ id: string; clean: boolean; records: number }>(
+        `select id::text as id, (status = 'completed' and rejected_count = 0) as clean, coalesce(records_in_file, 0)::int as records
+           from public.import_runs where file_hash = $1 and status in ('completed', 'completed_with_errors')
+          order by completed_at desc limit 1`,
+        [fileHash],
+      );
+      if (prior?.clean && args["skip-known-files"]) {
+        console.log(`\n▷ ${name}: identical file already imported cleanly (run ${prior.id}) — skipped. db:validate verifies its rows.`);
+        outcomes.push({ file: name, project: "-", status: "skipped (already imported)", records: Number(prior.records), counts: { ...counts, unchanged: Number(prior.records) } });
+        continue;
+      }
+      const [run] = await db.query<{ id: string }>(
+        `insert into public.import_runs (source_filename, file_hash, file_size_bytes, update_policy, importer_version, duplicate_of_run_id)
+         values ($1, $2, $3::bigint, $4, $5, $6::uuid) returning id::text as id`,
+        [name, fileHash, size, UPDATE_POLICY, IMPORTER_VERSION, prior?.id ?? null],
+      );
       const runId = run.id;
+      if (!UUID.test(runId)) throw new Error("Unexpected import run id.");
       console.log(`\n▶ ${name} (${(size / 1024 / 1024).toFixed(2)} MB, sha256 ${fileHash.slice(0, 12)}…)${prior ? " — identical file imported before; verifying idempotently" : ""}`);
 
       let pf: ProcessedFile;
@@ -390,39 +390,35 @@ async function main(): Promise<number> {
       } catch (err) {
         const code = err instanceof CsvStructureError ? "FILE_STRUCTURE_INVALID" : err instanceof ProjectMappingError ? "PROJECT_MAPPING_FAILED" : "FILE_PROCESSING_FAILED";
         const message = (err as Error).message;
-        await sql`insert into public.import_errors (import_run_id, error_code, validation_error) values (${runId}, ${code}, ${message})`;
-        await sql`
-          update public.import_runs set status = 'failed', completed_at = now(), error_summary = ${`${code}: ${message}`}
-          where id = ${runId}
-        `;
+        await db.query("insert into public.import_errors (import_run_id, error_code, validation_error) values ($1::uuid, $2, $3)", [runId, code, message]);
+        await db.query("update public.import_runs set status = 'failed', completed_at = now(), error_summary = $2 where id = $1::uuid", [runId, `${code}: ${message}`]);
         console.error(`  ✗ ${code}: ${message}`);
         outcomes.push({ file: name, project: "-", status: "failed", records: 0, counts, error: code });
         continue;
       }
 
-      await sql`
-        update public.import_runs
-           set project_id = ${pf.project.id}, records_in_file = ${pf.stats.records_in_file},
-               data_as_of = ${pf.stats.data_as_of}, min_created_at = ${pf.stats.min_created_at},
-               max_created_at = ${pf.stats.max_created_at}
-         where id = ${runId}
-      `;
+      await db.query(
+        `update public.import_runs set project_id = $2::uuid, records_in_file = $3::int, data_as_of = $4::timestamptz,
+                min_created_at = $5::timestamptz, max_created_at = $6::timestamptz where id = $1::uuid`,
+        [runId, pf.project.id, pf.stats.records_in_file, pf.stats.data_as_of, pf.stats.min_created_at, pf.stats.max_created_at],
+      );
       console.log(`  project ${pf.project.code}; ${pf.stats.records_in_file} records; ${pf.errors.length} invalid; data as of ${pf.stats.data_as_of}`);
 
+      let committed = 0;
+      let pending = 0;
       try {
-        // Row-level validation errors from parsing.
         if (pf.errors.length > 0) {
-          await insertErrors(sql, pf.errors.map((e) => errorRow(runId, e)));
+          await insertErrors(db, pf.errors.map((e) => errorRow(runId, e)));
           counts.rejected += pf.errors.length;
         }
 
         // Duplicates across files within this same run.
         const rows: TransformedRow[] = [];
-        const crossErrors: RowError[] = [];
+        const preErrors: RowError[] = [];
         for (const row of pf.rows) {
           const seen = seenInRun.get(row.record.ticket_id);
           if (seen) {
-            crossErrors.push({
+            preErrors.push({
               rowNumber: row.record.source_row_number,
               line: 0,
               ticketId: row.record.ticket_id,
@@ -435,53 +431,102 @@ async function main(): Promise<number> {
             rows.push(row);
           }
         }
-        if (crossErrors.length > 0) {
-          await insertErrors(sql, crossErrors.map((e) => errorRow(runId, e)));
-          counts.rejected += crossErrors.length;
+
+        // Classify every row against the database (same policy as before).
+        const existing = await prefetchExisting(db, rows.map((r) => r.record.ticket_id));
+        const dataAsOf = Date.parse(pf.stats.data_as_of!) / 1000;
+        const toWrite: TransformedRow[] = [];
+        for (const row of rows) {
+          const prev = existing.get(row.record.ticket_id);
+          if (!prev) {
+            toWrite.push(row);
+            counts.inserted++;
+          } else if (prev.project_id !== pf.project.id) {
+            preErrors.push({
+              rowNumber: row.record.source_row_number,
+              line: 0,
+              ticketId: row.record.ticket_id,
+              code: "TICKET_ID_COLLISION",
+              message: `Ticket ${row.record.ticket_id} already exists in another project (${prev.project_id}); refusing to overwrite it from ${pf.project.code}.`,
+              raw: rawFromRecord(row),
+            });
+          } else if (prev.row_hash === row.record.row_hash) {
+            counts.unchanged++;
+          } else if (!forceUpdate && dataAsOf < prev.as_of_epoch) {
+            counts.stale++;
+          } else {
+            toWrite.push(row);
+            counts.updated++;
+          }
+        }
+        if (preErrors.length > 0) {
+          await insertErrors(db, preErrors.map((e) => errorRow(runId, e)));
+          counts.rejected += preErrors.length;
         }
 
-        for (let i = 0; i < rows.length; i += batchSize) {
-          const c = await processBatch(sql, catalog, runId, pf, rows.slice(i, i + batchSize), Boolean(args["force-update"]));
-          counts.inserted += c.inserted;
-          counts.updated += c.updated;
-          counts.unchanged += c.unchanged;
-          counts.stale += c.stale;
-          counts.rejected += c.rejected;
-          if (process.stdout.isTTY) process.stdout.write(`  … ${Math.min(i + batchSize, rows.length)}/${rows.length}\r`);
+        const records = new Map(
+          toWrite.map((r) => [
+            r.record.ticket_id,
+            {
+              ...r.record,
+              project_id: pf.project.id,
+              source_filename: pf.fileName,
+              source_data_as_of: pf.stats.data_as_of,
+              first_import_run_id: runId,
+              last_import_run_id: runId,
+            } as Record<string, unknown>,
+          ]),
+        );
+        const batches = chunkBySize(toWrite, CLI_MAX_SQL_BYTES * 0.45, 500);
+        pending = toWrite.length;
+        for (const batch of batches) {
+          const script = batchScript(pf.project.id, batch, batch.map((r) => records.get(r.record.ticket_id)!), catalog, forceUpdate);
+          await withRetry(`batch @row ${batch[0].record.source_row_number}`, () => db.script(script));
+          committed += batch.length;
+          if (process.stdout.isTTY) process.stdout.write(`  … ${committed}/${toWrite.length}\r`);
         }
 
         const status = counts.rejected > 0 ? "completed_with_errors" : "completed";
-        const reconciliation = { ...pf.stats, classification_version: "rules-v1" };
-        await sql`
-          update public.import_runs
-             set status = ${status}, completed_at = now(),
-                 inserted_count = ${counts.inserted}, updated_count = ${counts.updated},
-                 skipped_unchanged_count = ${counts.unchanged}, skipped_stale_count = ${counts.stale},
-                 rejected_count = ${counts.rejected},
-                 reconciliation = ${sql.json(reconciliation as unknown as Parameters<typeof sql.json>[0])},
-                 error_summary = ${counts.rejected > 0 ? `${counts.rejected} row(s) rejected; see import_errors.` : null}
-           where id = ${runId}
-        `;
-        const [{ n }] = await sql<{ n: number }[]>`select count(*)::int as n from public.tickets where project_id = ${pf.project.id}`;
-        console.log(`  ✓ ${status}: +${counts.inserted} inserted, ${counts.updated} updated, ${counts.unchanged} unchanged, ${counts.stale} stale, ${counts.rejected} rejected — project now has ${n} tickets`);
+        await db.query(
+          `update public.import_runs
+              set status = $2, completed_at = now(), inserted_count = $3::int, updated_count = $4::int,
+                  skipped_unchanged_count = $5::int, skipped_stale_count = $6::int, rejected_count = $7::int,
+                  reconciliation = $8::jsonb, error_summary = $9
+            where id = $1::uuid`,
+          [
+            runId,
+            status,
+            counts.inserted,
+            counts.updated,
+            counts.unchanged,
+            counts.stale,
+            counts.rejected,
+            { ...pf.stats, classification_version: "rules-v1", transport: db.kind },
+            counts.rejected > 0 ? `${counts.rejected} row(s) rejected; see import_errors.` : null,
+          ],
+        );
+        const [{ n }] = await db.query<{ n: number }>("select count(*)::int as n from public.tickets where project_id = $1::uuid", [pf.project.id]);
+        console.log(
+          `  ✓ ${status}: +${counts.inserted} inserted, ${counts.updated} updated, ${counts.unchanged} unchanged, ${counts.stale} stale, ${counts.rejected} rejected — project now has ${n} tickets (${batches.length} write batch(es))`,
+        );
         outcomes.push({ file: name, project: pf.project.code, status, records: pf.stats.records_in_file, counts });
       } catch (err) {
         const message = (err as Error).message;
-        await sql`
-          update public.import_runs set status = 'failed', completed_at = now(),
-            inserted_count = ${counts.inserted}, updated_count = ${counts.updated},
-            skipped_unchanged_count = ${counts.unchanged}, skipped_stale_count = ${counts.stale},
-            rejected_count = ${counts.rejected}, error_summary = ${message.slice(0, 2000)}
-          where id = ${runId}
-        `.catch(() => {});
+        await db
+          .query(
+            `update public.import_runs set status = 'failed', completed_at = now(), inserted_count = 0, updated_count = 0,
+                    skipped_unchanged_count = 0, skipped_stale_count = 0, rejected_count = 0, error_summary = $2
+              where id = $1::uuid`,
+            [runId, `${message.slice(0, 1800)} (committed ${committed} of ${pending} rows before failing; each batch is atomic — re-run to resume)`],
+          )
+          .catch(() => {});
         console.error(`  ✗ failed: ${message}`);
         outcomes.push({ file: name, project: pf.project.code, status: "failed", records: pf.stats.records_in_file, counts, error: message.slice(0, 120) });
       }
     }
-
-    await sql`select pg_advisory_unlock(hashtext(${IMPORT_LOCK_KEY}))`;
   } finally {
-    await sql.end({ timeout: 5 });
+    if (locked) await db.query("select pg_advisory_unlock(hashtext($1))", [IMPORT_LOCK_KEY]).catch(() => {});
+    await db.end();
   }
 
   printSummary(outcomes);

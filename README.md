@@ -62,6 +62,13 @@ NEXT_PUBLIC_SITE_URL=http://localhost:3000
 | `npm run db:reclassify` | Recompute rule-based issue themes after rule changes |
 | `npm run admin:grant -- --email <e> [--role admin\|analyst] [--invite] [--revoke]` | Grant/revoke application roles |
 | `npm run db:types` | Regenerate `src/types/database.ts` from the local schema |
+| `npm run db:preflight` | Read-only inventory of a target database before migrating |
+| `npm run auth:config [-- --apply]` | Check/apply production Auth settings (site URL, redirects, invite-only) |
+| `npm run db:smoke` | RLS / role smoke test with temporary accounts (removed afterwards) |
+| `npm run web:smoke` | Authenticated HTTP smoke test of every page of the deployed app |
+| `npm run production:finish` | All of the above in order, idempotently, against `.env.cloud` (see docs/DEPLOYMENT.md) |
+
+Without `DATABASE_URL`, the database scripts use a **passwordless** transport: `supabase db query` (Management API) authorized by your `supabase login`. Use `ENV_FILE=.env.cloud` to target production.
 
 ## Access model
 

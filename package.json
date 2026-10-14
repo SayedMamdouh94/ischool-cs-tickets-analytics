@@ -22,7 +22,10 @@
     "verify": "npm run typecheck && npm run lint && npm run test && npm run build",
     "dev:users": "tsx --tsconfig tsconfig.json scripts/seed-local-users.ts",
     "db:preflight": "tsx --tsconfig tsconfig.json scripts/preflight.ts",
-    "db:smoke": "tsx --tsconfig tsconfig.json scripts/smoke-cloud.ts"
+    "db:smoke": "tsx --tsconfig tsconfig.json scripts/smoke-cloud.ts",
+    "auth:config": "tsx --tsconfig tsconfig.json scripts/auth-config.ts",
+    "web:smoke": "tsx --tsconfig tsconfig.json scripts/web-smoke.ts",
+    "production:finish": "ENV_FILE=${ENV_FILE:-.env.cloud} tsx --tsconfig tsconfig.json scripts/production-finish.ts"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.7",

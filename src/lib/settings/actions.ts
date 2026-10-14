@@ -110,7 +110,7 @@ export async function grantAccess(_prev: ActionResult | null, formData: FormData
     }
     const admin = createAdminClient();
     const { error: inviteError } = await admin.auth.admin.inviteUserByEmail(email, {
-      redirectTo: `${siteUrl()}/auth/confirm?next=/account/password`,
+      redirectTo: `${siteUrl()}/auth/callback?next=/account/password`,
     });
     if (inviteError) return { ok: false, message: `Invitation failed: ${inviteError.message}` };
     invited = true;

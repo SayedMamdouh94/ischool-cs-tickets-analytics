@@ -7,28 +7,28 @@
  */
 import { CLASSIFICATION_VERSION } from "@/lib/classification/rules";
 import { parseMessage } from "@/lib/ingest/message";
-import { connect, withRetry } from "./lib/db";
+import { connectDb, withRetry } from "./lib/db";
 import { loadCategoryCatalog, writeClassifications } from "./lib/classify-db";
 
 async function main(): Promise<number> {
-  const { sql, target } = connect({ max: 1 });
-  console.log(`Reclassifying tickets in ${target} with ${CLASSIFICATION_VERSION}`);
+  const db = connectDb();
+  console.log(`Reclassifying tickets in ${db.target} [${db.kind}] with ${CLASSIFICATION_VERSION}`);
   try {
-    const catalog = await loadCategoryCatalog(sql);
+    const catalog = await loadCategoryCatalog(db);
     let after = 0;
     let done = 0;
     for (;;) {
-      const batch = await sql<{ ticket_id: number; topic: string; message: string | null }[]>`
-        select ticket_id, topic, message from public.tickets where ticket_id > ${after} order by ticket_id limit 1000
-      `;
+      // Small pages keep each request well under the HTTP transport's size limit.
+      const batch = await db.query<{ ticket_id: number; topic: string; message: string | null }>(
+        "select ticket_id::bigint as ticket_id, topic, message from public.tickets where ticket_id > $1::bigint order by ticket_id limit 300",
+        [after],
+      );
       if (batch.length === 0) break;
       await withRetry("reclassify batch", () =>
-        sql.begin((tx) =>
-          writeClassifications(
-            tx,
-            catalog,
-            batch.map((t) => ({ ticketId: Number(t.ticket_id), topic: t.topic, details: parseMessage(t.message).details })),
-          ),
+        writeClassifications(
+          db,
+          catalog,
+          batch.map((t) => ({ ticketId: Number(t.ticket_id), topic: t.topic, details: parseMessage(t.message).details })),
         ),
       );
       after = Number(batch[batch.length - 1].ticket_id);
@@ -37,7 +37,7 @@ async function main(): Promise<number> {
     console.log(`✓ ${done} tickets classified.`);
     return 0;
   } finally {
-    await sql.end({ timeout: 5 });
+    await db.end();
   }
 }
 

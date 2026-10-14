@@ -1,18 +1,18 @@
 /**
- * Grants an application role to a user (bootstrap the first administrator).
+ * Grants an application role to a user (provision administrators/analysts).
  *
  *   npm run admin:grant -- --email you@example.com                 # user must already exist
- *   npm run admin:grant -- --email you@example.com --invite        # send a Supabase invite first
+ *   npm run admin:grant -- --email you@example.com --invite        # send a Supabase invitation first
  *   npm run admin:grant -- --email analyst@example.com --role analyst
  *   npm run admin:grant -- --email old@example.com --revoke
  *
- * Uses DATABASE_URL (privileged) to write user_roles, and — only with
- * --invite — SUPABASE_SECRET_KEY to call the Auth admin API. Neither value is
- * ever printed.
+ * --email defaults to ADMIN_EMAIL when set. Uses the configured database
+ * transport (DATABASE_URL or the passwordless Supabase CLI transport) and —
+ * only with --invite — SUPABASE_SECRET_KEY for the Auth admin API. Idempotent.
  */
 import { parseArgs } from "node:util";
 import { createClient } from "@supabase/supabase-js";
-import { connect } from "./lib/db";
+import { connectDb } from "./lib/db";
 import { optionalEnv, requireEnv } from "./lib/env";
 
 async function main(): Promise<number> {
@@ -24,9 +24,9 @@ async function main(): Promise<number> {
       revoke: { type: "boolean", default: false },
     },
   });
-  const email = values.email?.trim().toLowerCase();
+  const email = (values.email ?? optionalEnv("ADMIN_EMAIL"))?.trim().toLowerCase();
   if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
-    console.error("Usage: npm run admin:grant -- --email <address> [--role admin|analyst] [--invite] [--revoke]");
+    console.error("Usage: npm run admin:grant -- --email <address> [--role admin|analyst] [--invite] [--revoke]  (or set ADMIN_EMAIL)");
     return 1;
   }
   const role = values.role;
@@ -35,18 +35,16 @@ async function main(): Promise<number> {
     return 1;
   }
 
-  const { sql, target } = connect({ max: 1 });
+  const db = connectDb();
   try {
-    let [user] = await sql<{ id: string }[]>`select id from auth.users where lower(email) = ${email} and deleted_at is null`;
+    let [user] = await db.query<{ id: string }>("select id::text as id from auth.users where lower(email) = $1 and deleted_at is null", [email]);
 
     if (!user && values.invite) {
       const url = requireEnv("NEXT_PUBLIC_SUPABASE_URL");
       const secret = requireEnv("SUPABASE_SECRET_KEY", "Required only for --invite. Keep it server-side.");
       const site = optionalEnv("NEXT_PUBLIC_SITE_URL") ?? "http://localhost:3000";
       const admin = createClient(url, secret, { auth: { persistSession: false, autoRefreshToken: false } });
-      const { data, error } = await admin.auth.admin.inviteUserByEmail(email, {
-        redirectTo: `${site}/auth/confirm?next=/account/password`,
-      });
+      const { data, error } = await admin.auth.admin.inviteUserByEmail(email, { redirectTo: `${site}/auth/callback?next=/account/password` });
       if (error) {
         console.error(`Invite failed: ${error.message}`);
         return 1;
@@ -56,31 +54,33 @@ async function main(): Promise<number> {
     }
 
     if (!user) {
-      console.error(
-        `No auth user with email ${email} in ${target}. Create it in Supabase (Authentication → Users → Add user), ` +
-          "or re-run with --invite to send an invitation.",
-      );
+      console.error(`No auth user with email ${email} in ${db.target}. Re-run with --invite to send an invitation.`);
       return 1;
     }
 
     if (values.revoke) {
-      await sql`delete from public.user_roles where user_id = ${user.id}`;
+      await db.query("delete from public.user_roles where user_id = $1::uuid", [user.id]);
       console.log(`✓ Revoked application access for ${email}.`);
       return 0;
     }
 
-    await sql`
-      insert into public.user_roles (user_id, role) values (${user.id}, ${role})
-      on conflict (user_id) do update set role = excluded.role
-    `;
-    await sql`
-      insert into public.audit_events (user_id, action, details)
-      values (null, 'access.role_granted', ${sql.json({ user_id: user.id, role, via: "cli" })})
-    `;
-    console.log(`✓ ${email} now has the '${role}' role.`);
-    return 0;
+    const [current] = await db.query<{ role: string }>("select role from public.user_roles where user_id = $1::uuid", [user.id]);
+    if (current?.role === role) {
+      console.log(`✓ ${email} already has the '${role}' role (no change).`);
+      return 0;
+    }
+    await db.query(
+      "insert into public.user_roles (user_id, role) values ($1::uuid, $2) on conflict (user_id) do update set role = excluded.role",
+      [user.id, role],
+    );
+    await db.query("insert into public.audit_events (user_id, action, details) values (null, 'access.role_granted', $1::jsonb)", [
+      { user_id: user.id, role, via: "cli" },
+    ]);
+    const [check] = await db.query<{ role: string }>("select role from public.user_roles where user_id = $1::uuid", [user.id]);
+    console.log(`✓ ${email} now has the '${check?.role}' role (verified in the database).`);
+    return check?.role === role ? 0 : 1;
   } finally {
-    await sql.end({ timeout: 5 });
+    await db.end();
   }
 }
 

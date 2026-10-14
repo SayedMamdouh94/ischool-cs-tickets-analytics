@@ -10,7 +10,7 @@ import { createServerClient } from "@supabase/ssr";
  * verifies the session and role server-side, and PostgreSQL enforces RLS and
  * role checks inside every function.
  */
-const PUBLIC_PATHS = ["/login", "/auth/confirm", "/auth/error"];
+const PUBLIC_PATHS = ["/login", "/auth/confirm", "/auth/callback", "/auth/session", "/auth/error"];
 
 export async function proxy(request: NextRequest) {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
