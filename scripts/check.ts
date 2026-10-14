@@ -75,10 +75,19 @@ async function main(): Promise<number> {
     ok("free-text ticket columns not directly readable", exposed.length === 0, exposed.length === 0 ? SENSITIVE_TICKET_COLUMNS.join(", ") : `exposed: ${exposed.join(", ")}`);
 
     // Every public function is SECURITY DEFINER with a pinned search_path and checks the role
+    // Trigger / event-trigger functions (e.g. Supabase's platform-provided rls_auto_enable)
+    // cannot be called through the Data API, so they are listed but not role-checked.
+    const platformFns = await sql<{ proname: string }[]>`
+      select p.proname from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+      where n.nspname = 'public' and p.prorettype in ('trigger'::regtype, 'event_trigger'::regtype)
+    `;
+    if (platformFns.length > 0) {
+      ok("trigger-only functions in public (not callable via API)", true, platformFns.map((f) => f.proname).join(", "));
+    }
     const fns = await sql<{ proname: string; prosecdef: boolean; config: string[] | null; src: string }[]>`
       select p.proname, p.prosecdef, p.proconfig as config, p.prosrc as src
       from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-      where n.nspname = 'public'
+      where n.nspname = 'public' and p.prorettype not in ('trigger'::regtype, 'event_trigger'::regtype)
     `;
     const unpinned = fns.filter((f) => !(f.config ?? []).some((c) => c.startsWith("search_path="))).map((f) => f.proname);
     ok("public functions pin search_path", unpinned.length === 0, unpinned.length === 0 ? `${fns.length} functions` : unpinned.join(", "));

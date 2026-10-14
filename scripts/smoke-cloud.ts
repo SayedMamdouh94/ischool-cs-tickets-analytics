@@ -60,9 +60,10 @@ async function main(): Promise<number> {
     check("anonymous: tickets table denied", anonTable.error?.code === "42501", anonTable.error?.code ?? "no error");
     const anonRpc = await callRpc(anon, "get_grouped_metrics", { p_filters: {} });
     check("anonymous: analytics functions denied", Boolean(anonRpc.error), anonRpc.error?.code ?? "no error");
-    const signup = await anon.auth.signUp({ email: `smoke-signup-${stamp}@cs-analytics.invalid`, password: password() });
-    check("public sign-up disabled", Boolean(signup.error), signup.error?.message ?? "sign-up was accepted!");
-    if (!signup.error && signup.data.user) await admin.auth.admin.deleteUser(signup.data.user.id);
+    // Read the Auth service's own setting (a sign-up probe can be rejected for unrelated
+    // reasons, e.g. Supabase Cloud refuses reserved test domains).
+    const settings = (await (await fetch(`${url}/auth/v1/settings`, { headers: { apikey: key } })).json()) as { disable_signup?: boolean };
+    check("public sign-up disabled", settings.disable_signup === true, `disable_signup=${settings.disable_signup}`);
 
     // Demo credentials from local development must not work here.
     const demo = await anon.auth.signInWithPassword({ email: "admin@local.test", password: "LocalAdmin#2026" });
