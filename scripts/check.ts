@@ -19,8 +19,8 @@ const ok = (name: string, pass: boolean, detail: string, warnOnly = false) =>
 const SENSITIVE_TICKET_COLUMNS = ["message", "response", "note", "attachment_urls", "response_attachment_urls"];
 
 async function main(): Promise<number> {
-  const { sql, target } = connect({ max: 1 });
-  console.log(`Checking ${target}\n`);
+  const { sql, target, isLocal } = connect({ max: 1 });
+  console.log(`Checking ${target}${isLocal ? " [LOCAL]" : ""}\n`);
   try {
     const [{ version }] = await sql<{ version: string }[]>`select current_setting('server_version') as version`;
     ok("database reachable", true, `PostgreSQL ${version}`);
@@ -110,6 +110,18 @@ async function main(): Promise<number> {
     `;
     ok("no import stuck in 'running'", running === 0, `${running} running`);
     ok("no failed imports in history", failed === 0, `${failed} failed`, true);
+
+    // Demo / test accounts must never exist outside the local stack.
+    const demo = await sql<{ email: string; role: string | null }[]>`
+      select u.email::text as email, ur.role
+      from auth.users u left join public.user_roles ur on ur.user_id = u.id
+      where u.email ilike '%@local.test'
+    `;
+    ok(
+      "no demo (@local.test) accounts",
+      isLocal || demo.length === 0,
+      demo.length === 0 ? "none" : `${demo.length} found${isLocal ? " (local stack — expected)" : ": " + demo.map((d) => d.email).join(", ")}`,
+    );
 
     // Access
     const [{ admins }] = await sql<{ admins: number }[]>`select count(*)::int as admins from public.user_roles where role = 'admin'`;

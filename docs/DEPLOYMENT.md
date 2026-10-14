@@ -35,48 +35,56 @@ Authentication → **Emails** → templates for *Invite user* and *Reset passwor
 
 For production email volume, configure custom SMTP (Authentication → Emails → SMTP settings); the built-in sender is rate-limited.
 
-## 2. Apply the migrations
+## 2. Production credentials for the admin CLI
+
+Production values live in `.env.cloud` (git-ignored, excluded from Vercel uploads, mode 600) and are used by prefixing commands with `ENV_FILE=.env.cloud`. Your local `.env.local` is never touched.
+
+- `DATABASE_URL`: Supabase → **Connect** → **Session pooler** (port 5432) URI with the database password. Enter it yourself in the editor; never paste it into chat.
+- `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SECRET_KEY`: Project Settings → API Keys (they can also be written into the file directly from the Supabase CLI without being displayed).
+
+## 3. Inspect, then apply the migrations
 
 ```bash
+ENV_FILE=.env.cloud npm run db:preflight     # READ-ONLY: existing tables, rows, migration history
 supabase link --project-ref rpofhzcqcxpuotsebzsq
-supabase db push --dry-run        # review: 4 migrations, no destructive statements
+supabase db push --dry-run                   # lists the migrations that would run
 supabase db push
 ```
 
-The migrations only create objects and insert reference data; they never drop data. Never run `supabase db reset --linked` against production.
+Proceed only if the preflight verdict is **EMPTY** or **THIS APP**. If it reports other objects, stop and review them — the migrations only create objects and insert reference data, but they would fail or interleave with an unrelated schema. Never run `supabase db reset --linked` against production.
 
-## 3. Import the data (from an admin machine)
-
-Copy the **Session pooler** connection string (Connect → Session pooler, port 5432) and export it for this shell only, without echoing it or writing it to history:
+## 4. Import and validate
 
 ```bash
-read -rs DATABASE_URL && export DATABASE_URL     # paste, press Enter
-npm run db:import -- --dry-run
-npm run db:import
-npm run db:validate      # expect: 62 checks passed, 0 failed
-npm run db:check         # expect: 0 failed (one warning until an admin exists)
+ENV_FILE=.env.cloud npm run db:import -- --dry-run
+ENV_FILE=.env.cloud npm run db:import
+ENV_FILE=.env.cloud npm run db:validate      # expect: 62 checks passed, 0 failed
+ENV_FILE=.env.cloud npm run db:check         # expect: 0 failed
 ```
 
-Shell variables take precedence over `.env.local`, so the same checkout can target local and production safely.
+### First administrator
 
-## 4. Create the first administrator
-
-Either create the user in the dashboard (Authentication → Users → **Add user** → *Create new user*, with "Auto confirm" checked) and then:
+Create the user in the dashboard (Authentication → Users → **Add user** → *Create new user*, "Auto confirm" checked), then:
 
 ```bash
-npm run admin:grant -- --email you@example.com            # uses DATABASE_URL from step 3
+ENV_FILE=.env.cloud npm run admin:grant -- --email you@example.com
 ```
 
-or send an invitation directly (also needs the project URL and secret key in the shell):
+or send an invitation instead (needs `SUPABASE_SECRET_KEY` and `NEXT_PUBLIC_SITE_URL` in `.env.cloud`):
 
 ```bash
-export NEXT_PUBLIC_SUPABASE_URL=https://rpofhzcqcxpuotsebzsq.supabase.co
-read -rs SUPABASE_SECRET_KEY && export SUPABASE_SECRET_KEY
-export NEXT_PUBLIC_SITE_URL=https://<your-app>.vercel.app
-npm run admin:grant -- --email you@example.com --invite
+ENV_FILE=.env.cloud npm run admin:grant -- --email you@example.com --invite
 ```
 
-Further users can then be invited from **Settings → Access** in the app.
+Further users can be invited from **Settings → Access**.
+
+### Permission smoke test
+
+```bash
+ENV_FILE=.env.cloud npm run db:smoke
+```
+
+Creates temporary admin / analyst / no-role users with random in-memory passwords, verifies anonymous lockdown, disabled sign-up, rejection of the local demo credentials, analyst restrictions, admin access and the per-project counts through the public API, then deletes the temporary users. It refuses to run until a real administrator exists.
 
 ## 5. GitHub repository
 
@@ -134,7 +142,7 @@ Pushing to the default branch also deploys automatically once the repository is 
 4. Sign in as the administrator. Executive Overview shows **12,969** tickets; the header shows "Historical export · data as of …".
 5. Data Quality → File-level reconciliation shows "No issue" for all four files.
 6. Ticket Explorer → open a ticket → message text is visible to the admin; sign in as an analyst and confirm it is hidden.
-7. `npm run db:check` (with production `DATABASE_URL`) → 0 failed.
+7. `ENV_FILE=.env.cloud npm run db:check` → 0 failed (includes "no demo @local.test accounts").
 
 ## Operations
 

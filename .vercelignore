@@ -1,0 +1,13 @@
+# Never upload credentials or source exports (student data) to Vercel.
+.env*
+!.env.example
+data/
+*.csv
+
+# Not needed to build or run the web app
+tests/
+supabase/.temp/
+supabase/.branches/
+.next/
+node_modules/
+coverage/
