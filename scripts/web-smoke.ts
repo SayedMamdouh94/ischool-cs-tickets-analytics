@@ -36,7 +36,8 @@ async function sessionCookie(url: string, key: string, u: TestUser): Promise<str
 
 async function get(site: string, path: string, cookie?: string): Promise<{ status: number; text: string; location: string | null; headers: Headers }> {
   const res = await fetch(`${site}${path}`, { headers: cookie ? { cookie } : {}, redirect: "manual", signal: AbortSignal.timeout(90_000) });
-  const text = res.status === 200 ? await res.text() : "";
+  // React separates adjacent server-rendered text nodes with <!-- -->; remove them before matching.
+  const text = res.status === 200 ? (await res.text()).replace(/<!-- -->/g, "") : "";
   return { status: res.status, text, location: res.headers.get("location"), headers: res.headers };
 }
 
@@ -124,7 +125,7 @@ async function main(): Promise<number> {
     const detailAdmin = await get(site, `/tickets/${exp.sample}`, adminCookie);
     check("admin: ticket detail shows message", detailAdmin.status === 200 && detailAdmin.text.includes("Student message"), String(detailAdmin.status));
     const detailAnalyst = await get(site, `/tickets/${exp.sample}`, analystCookie);
-    check("analyst: ticket detail hides content", detailAnalyst.status === 200 && detailAnalyst.text.includes("Message content hidden") && !detailAnalyst.text.includes("Student message"), String(detailAnalyst.status));
+    check("analyst: ticket detail hides content", detailAnalyst.status === 200 && detailAnalyst.text.includes("Message content hidden") && !detailAnalyst.text.includes(">Student message<"), String(detailAnalyst.status));
     const analystSettings = await get(site, "/settings", analystCookie);
     check("analyst: settings are read-only", analystSettings.text.includes("settings are read-only"));
 

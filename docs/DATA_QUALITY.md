@@ -12,7 +12,7 @@ Findings from the four initial exports (12,969 tickets), verified by `npm run db
 | DEMI — Summer Intake | 1939 | 3,803 | 3,803 | 0 |
 | **Total** | | **12,969** | **12,969** | **0** |
 
-All 12,969 Ticket_IDs are unique across files. Row-level SHA-256 hashes, status counts, missing values for all 19 fields, anomaly counts and duration medians/P90s match between the files and the database (62 automated checks).
+All 12,969 Ticket_IDs are unique across files. Row-level SHA-256 hashes, status counts, missing values for all 19 fields, anomaly counts, duration medians/P90s, and the stored free text and timestamps themselves (re-read from the database and compared field by field) match between the files and the database — 70 automated checks, verified locally and on the production database.
 
 ## Findings and how they are handled
 

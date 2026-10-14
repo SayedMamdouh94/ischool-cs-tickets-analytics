@@ -8,6 +8,7 @@
  * statistics (recomputed independently in TypeScript and compared with SQL).
  * Exits non-zero on any mismatch.
  */
+import { createHash } from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { parseArgs } from "node:util";
@@ -62,6 +63,23 @@ function sortedObject(o: Record<string, number>): Record<string, number> {
 function round(n: number | null): number | null {
   return n === null ? null : Math.round(n);
 }
+
+/** Fields whose stored value must equal the (normalized) source value exactly. */
+const FIDELITY_FIELDS = [
+  "topic",
+  "message",
+  "response",
+  "note",
+  "status",
+  "department",
+  "owner_type",
+  "owner_id",
+  "responder_name",
+  "resolved_by",
+  "attachment_urls",
+  "response_attachment_urls",
+] as const;
+const NULL_MARK = "<NULL>";
 
 const MISSING_SQL = SOURCE_COLUMNS.map((col) => {
   const dbCol = DB_COLUMN[col];
@@ -155,6 +173,35 @@ async function validateFile(db: Db, pf: ProcessedFile): Promise<void> {
   record(scope, "attachment references (request, response)", [pf.stats.attachments.request, pf.stats.attachments.response], [Number(st.att_req), Number(st.att_resp)]);
   record(scope, "current classifications", pf.stats.accepted, Number(st.classified));
   record(scope, "timestamp offsets inconsistent with Africa/Cairo", 0, pf.stats.offset_mismatches_vs_cairo, pf.stats.offset_mismatches_vs_cairo === 0 ? "PASS" : "WARN");
+
+  // Fidelity: re-read the STORED values (not the importer's hash) and compare
+  // every free-text/identifier field and every timestamp with the source file.
+  const stored = await db.query<{ id: number; h: string; c: number | null; r: number | null; s: number | null }>(
+    `select ticket_id::bigint as id,
+            md5(${FIDELITY_FIELDS.map((f) => `coalesce(${f}, '${NULL_MARK}')`).join(" || chr(31) || ")}) as h,
+            extract(epoch from created_at)::bigint as c,
+            extract(epoch from responded_at)::bigint as r,
+            extract(epoch from resolved_at)::bigint as s
+       from public.tickets where project_id = $1::uuid`,
+    [pid],
+  );
+  const storedById = new Map(stored.map((x) => [Number(x.id), x]));
+  let textMismatch = 0;
+  let timeMismatch = 0;
+  const sec = (ms: number | null) => (ms === null ? null : Math.round(ms / 1000));
+  for (const row of pf.rows) {
+    const db_ = storedById.get(row.record.ticket_id);
+    if (!db_) continue;
+    const rec = row.record as unknown as Record<string, string | null>;
+    const digest = createHash("md5")
+      .update(FIDELITY_FIELDS.map((f) => rec[f] ?? NULL_MARK).join("\u001f"), "utf8")
+      .digest("hex");
+    if (digest !== db_.h) textMismatch++;
+    const asNum = (v: number | null) => (v === null ? null : Number(v));
+    if (asNum(db_.c) !== sec(row.createdEpochMs) || asNum(db_.r) !== sec(row.respondedEpochMs) || asNum(db_.s) !== sec(row.resolvedEpochMs)) timeMismatch++;
+  }
+  record(scope, "stored text fields identical to source (md5)", 0, textMismatch);
+  record(scope, "stored timestamps identical to source", 0, timeMismatch);
 
   const expected = BRIEF_EXPECTED_COUNTS[pf.project.code];
   if (expected !== undefined) {

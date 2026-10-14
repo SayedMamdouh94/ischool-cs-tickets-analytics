@@ -35,7 +35,7 @@ supabase projects api-keys --project-ref <ref> --reveal -o json   # pipe into th
 | 2. auth settings | `site_url`, redirect allow-list (existing entries kept), `disable_signup = true` via `supabase config diff/push` with a temporary config that declares only these keys | pushes only when different |
 | 3. preflight | Read-only inventory: tables, rows, migration history | read-only |
 | 4. import | `db:import --skip-known-files` | files already imported cleanly are skipped |
-| 5. validate | 62 reconciliation checks against the original CSVs | read-only |
+| 5. validate | 70 reconciliation checks against the original CSVs, incl. stored-text and timestamp fidelity | read-only |
 | 6. health | RLS, grants, anon lockdown, demo-account check | read-only |
 | 7. administrator | `ADMIN_EMAIL` gets the admin role (invited first if the account doesn't exist) | no change if already admin |
 | 8. permissions | Temporary admin / analyst / no-role accounts exercise RLS and role checks, then are removed | leaves no accounts |
