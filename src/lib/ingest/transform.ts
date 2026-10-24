@@ -57,6 +57,10 @@ export interface RowError {
   code: string;
   message: string;
   raw: SourceRow;
+  /** Column the error is about, when it concerns a single column. */
+  column?: string;
+  /** Per-column problems behind a VALIDATION_FAILED error. */
+  issues?: { column: string; message: string }[];
 }
 
 /** SHA-256 over the raw source values in canonical column order. */
@@ -87,6 +91,7 @@ export function transformRecord(
         code: "VALIDATION_FAILED",
         message: formatZodIssues(parsed.error),
         raw: rec.values,
+        issues: parsed.error.issues.map((i) => ({ column: String(i.path[0] ?? "row"), message: i.message })),
       },
     };
   }

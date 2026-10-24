@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { mad, mean, median, percentileCont, relativeChange } from "@/lib/analytics/stats";
-import { detectSpikes, fillDailyGaps } from "@/lib/analytics/anomalies";
+import { detectProjectSpikes, detectSpikes, fillDailyGaps } from "@/lib/analytics/anomalies";
 import { bucketRange, pivotSeries, totalsByBucket } from "@/lib/analytics/shape";
-import { buildInsights, RULES } from "@/lib/analytics/insights";
-import type { GroupMetrics } from "@/lib/analytics/types";
+import { DEFAULT_RULES, buildInsights, describePeriods, rulesFrom, shareZ, type InsightInputs } from "@/lib/analytics/insights";
+import type { GroupMetrics, PeriodComparison } from "@/lib/analytics/types";
 import { csvEscape, toCsv } from "@/lib/table-data";
 import { fmtDuration, fmtPct } from "@/lib/format";
 
@@ -84,7 +84,7 @@ describe("series shaping", () => {
 
 function metrics(over: Partial<GroupMetrics>): GroupMetrics {
   return {
-    key: "k", label: "K", tickets: 0, completed: 0, pending: 0, rejected: 0, missing_status: 0, other_status: 0, open_tickets: 0,
+    key: "k", label: "K", tickets: 0, completed: 0, pending: 0, rejected: 0, missing_status: 0, other_status: 0, closed_status: 0, unclassified_status: 0, open_tickets: 0,
     with_response_ts: 0, with_resolution_ts: 0, with_note: 0, generic_ack: 0, unique_owners: 0, response_n: 0, response_invalid: 0,
     response_avg_s: null, response_median_s: null, response_p90_s: null, response_breaches: 0, resolution_n: 0, resolution_invalid: 0,
     resolution_avg_s: null, resolution_median_s: null, resolution_p90_s: null, resolution_breaches: 0, open_breaches: 0,
@@ -92,22 +92,49 @@ function metrics(over: Partial<GroupMetrics>): GroupMetrics {
   };
 }
 
+function periods(over: Partial<PeriodComparison> = {}): PeriodComparison {
+  return {
+    dimension: "topic",
+    mode: "aligned",
+    days: 30,
+    current: { from: "2026-09-06", to: "2026-10-05", days: 30 },
+    previous: { from: "2026-08-07", to: "2026-09-05", days: 30 },
+    totals: { current: 600, previous: 600 },
+    projects: [
+      { project: "A", name: "Project A", included: true, reason: "ok", first_date: "2026-04-01", last_complete_date: "2026-10-05", current_from: "2026-09-06", current_to: "2026-10-05", previous_from: "2026-08-07", previous_to: "2026-09-05", current: 400, previous: 400 },
+      { project: "B", name: "Project B", included: true, reason: "ok", first_date: "2026-05-01", last_complete_date: "2026-09-19", current_from: "2026-08-21", current_to: "2026-09-19", previous_from: "2026-07-22", previous_to: "2026-08-20", current: 200, previous: 200 },
+      { project: "C", name: "Project C", included: false, reason: "insufficient_history", first_date: "2026-09-20", last_complete_date: "2026-10-05", current_from: null, current_to: null, previous_from: null, previous_to: null, current: 0, previous: 0 },
+    ],
+    rows: [
+      { key: "Rising", label: null, current: 90, previous: 30 },
+      { key: "Tiny", label: null, current: 6, previous: 1 },
+      { key: "Flat", label: null, current: 100, previous: 100 },
+    ],
+    ...over,
+  };
+}
+
 describe("deterministic insights", () => {
   const overall = metrics({ key: "all", tickets: 1000, completed: 990, open_tickets: 10, resolution_n: 990, resolution_median_s: 86400, resolution_breaches: 300, generic_ack: 990, with_response_ts: 900 });
-  const base = {
+  const base: InsightInputs = {
     overall,
-    projects: [metrics({ key: "A", label: "Project A", tickets: 700, open_tickets: 8, open_breaches: 3, resolution_n: 700, resolution_breaches: 250 }), metrics({ key: "B", label: "Project B", tickets: 300, open_tickets: 2, resolution_n: 290, resolution_breaches: 50 })],
+    projects: [metrics({ key: "A", label: "Project A", tickets: 700, unique_owners: 350, open_tickets: 8, open_breaches: 3, resolution_n: 700, resolution_breaches: 250 }), metrics({ key: "B", label: "Project B", tickets: 300, unique_owners: 200, open_tickets: 2, resolution_n: 290, resolution_breaches: 50 })],
     topics: [metrics({ key: "Slow topic", tickets: 100, resolution_n: 100, resolution_median_s: 3 * 86400 }), metrics({ key: "Small slow topic", tickets: 5, resolution_n: 5, resolution_median_s: 9 * 86400 })],
-    topicPeriods: {
-      dimension: "topic",
-      current: { from: "2026-09-01", to: "2026-09-30", days: 30 },
-      previous: { from: "2026-08-02", to: "2026-08-31", days: 30 },
-      rows: [
-        { key: "Rising", label: null, current: 60, previous: 20 },
-        { key: "Tiny", label: null, current: 5, previous: 1 },
+    topicPeriods: periods(),
+    topicThemes: {
+      row_dimension: "topic",
+      col_dimension: "subcategory",
+      cells: [
+        { row: "Big", col: "attendance_records", count: 80, resolution_median_s: null },
+        { row: "Big", col: "other", count: 40, resolution_median_s: null },
+        { row: "Alpha", col: "grades_evaluation", count: 60, resolution_median_s: null },
+        { row: "Alpha", col: "other", count: 50, resolution_median_s: null },
+        { row: "Zulu", col: "platform_access", count: 300, resolution_median_s: null },
+        { row: "Zulu", col: "other", count: 100, resolution_median_s: null },
+        { row: "Mid", col: "session_joining", count: 70, resolution_median_s: null },
+        { row: "Mid", col: "other", count: 50, resolution_median_s: null },
       ],
     },
-    topicThemes: { row_dimension: "topic" as const, col_dimension: "subcategory" as const, cells: [{ row: "Big", col: "attendance_records", count: 80, resolution_median_s: null }, { row: "Big", col: "other", count: 40, resolution_median_s: null }] },
     recurring: null,
     spikes: [],
     subcategoryLabels: { attendance_records: "Attendance / absence records" },
@@ -119,21 +146,119 @@ describe("deterministic insights", () => {
     expect(ids).toContain("volume-leader");
     expect(ids).toContain("topic-rising-Rising");
     expect(ids).not.toContain("topic-rising-Tiny"); // below the minimum count
+    expect(ids).not.toContain("topic-rising-Flat");
     expect(ids).toContain("topic-slow-Slow topic");
-    expect(ids).not.toContain("topic-slow-Small slow topic"); // n below RULES.slowTopicMinN
-    expect(ids).toContain("theme-Big-attendance_records");
+    expect(ids).not.toContain("topic-slow-Small slow topic"); // n below the configured minimum
     expect(ids).toContain("outstanding-projects");
     expect(ids).toContain("response-caveat");
     const leader = buildInsights(base).find((i) => i.id === "volume-leader")!;
     expect(leader.statement).toContain("70.0%");
-    expect(RULES.slowTopicMinN).toBeGreaterThan(5);
   });
 
-  it("orders by severity and returns nothing for an empty selection", () => {
+  it("ranks recurring themes by tickets affected, not alphabetically", () => {
+    const themes = buildInsights(base).filter((i) => i.id.startsWith("theme-")).map((i) => i.id);
+    expect(themes).toEqual(["theme-Zulu-platform_access", "theme-Big-attendance_records", "theme-Mid-session_joining"]);
+  });
+
+  it("labels observations, recommendations and caveats explicitly", () => {
+    const out = buildInsights(base);
+    for (const i of out) expect(["observation", "recommendation", "caveat"]).toContain(i.kind);
+    for (const i of out.filter((x) => x.kind === "recommendation")) expect(i.recommendation).toBeTruthy();
+    expect(out.find((i) => i.id === "response-caveat")?.kind).toBe("caveat");
+    expect(out.find((i) => i.id === "volume-leader")?.kind).toBe("observation");
+  });
+
+  it("compares topic shares, not raw counts, so growing activity is not a topic trend", () => {
+    // Every topic doubles because the project doubled in size: no topic trend.
+    const doubled = periods({ totals: { current: 1200, previous: 600 }, rows: [{ key: "Rising", label: null, current: 60, previous: 30 }, { key: "Flat", label: null, current: 200, previous: 100 }] });
+    const ids = buildInsights({ ...base, topicPeriods: doubled }).map((i) => i.id);
+    expect(ids.some((id) => id.startsWith("topic-rising"))).toBe(false);
+    expect(shareZ(60, 1200, 30, 600)).toBe(0);
+    expect(shareZ(90, 600, 30, 600)! > 1.96).toBe(true);
+  });
+
+  it("explains per-project comparison windows and exclusions", () => {
+    const rising = buildInsights(base).find((i) => i.id === "topic-rising-Rising")!;
+    expect(rising.method).toContain("own latest 30 complete days");
+    expect(rising.method).toContain("Project B");
+    expect(rising.method).toContain("started within the comparison period");
+    expect(describePeriods(periods({ mode: "calendar" }))).toMatch(/^Selected period/);
+  });
+
+  it("reports when trends cannot be compared instead of inventing them", () => {
+    const none = periods({ totals: { current: 0, previous: 0 }, rows: [], projects: periods().projects.map((p) => ({ ...p, included: false, reason: "insufficient_history" as const })) });
+    const out = buildInsights({ ...base, topicPeriods: none });
+    expect(out.find((i) => i.id === "trend-unavailable")?.kind).toBe("caveat");
+    expect(out.some((i) => i.id.startsWith("topic-rising"))).toBe(false);
+  });
+
+  it("uses configurable thresholds", () => {
+    const strict = rulesFrom([{ key: "trend_min_current", value: 500, min_value: 1, max_value: 10000, unit: "count", label: "", description: "", updated_at: "" }]);
+    expect(strict.trend_min_current).toBe(500);
+    expect(strict.slow_topic_factor).toBe(DEFAULT_RULES.slow_topic_factor);
+    expect(buildInsights({ ...base, rules: strict }).some((i) => i.id === "topic-rising-Rising")).toBe(false);
+    const lenient = { ...DEFAULT_RULES, slow_topic_min_n: 2 };
+    expect(buildInsights({ ...base, rules: lenient }).some((i) => i.id === "topic-slow-Small slow topic")).toBe(true);
+  });
+
+  it("surfaces outdated exports, partial imports, unmapped topics and unclassified statuses", () => {
+    const health = {
+      coverage: [
+        { project: "A", name: "Project A", status: "active" as const, tickets: 700, first_date: "2026-04-01", last_date: "2026-10-06", snapshot_at: "2026-10-06T12:00:00Z", last_complete_date: "2026-10-05" },
+        { project: "B", name: "Project B", status: "active" as const, tickets: 300, first_date: "2026-05-01", last_date: "2026-09-20", snapshot_at: "2026-09-20T09:00:00Z", last_complete_date: "2026-09-19" },
+        { project: "N", name: "New project", status: "active" as const, tickets: 0, first_date: null, last_date: null, snapshot_at: null, last_complete_date: null },
+      ],
+      activeImports: [{ project: "A", status: "importing", rows_applied: 500, rows_to_apply: 2000, started_at: "2026-10-20T08:00:00Z" }],
+      partialImports: [{ project: "B", rows_applied: 1000, rows_to_apply: 3000 }],
+      rejectedRows: [{ project: "A", rejected: 4, source_filename: "a.csv" }],
+      unmappedTopics: 2,
+      unclassifiedStatusTickets: 7,
+    };
+    const ids = buildInsights({ ...base, health }).map((i) => i.id);
+    expect(ids).toEqual(expect.arrayContaining(["stale-exports", "import-running-A", "import-partial-B", "rejected-rows", "unmapped-topics", "unclassified-statuses", "empty-projects"]));
+    const stale = buildInsights({ ...base, health }).find((i) => i.id === "stale-exports")!;
+    expect(stale.statement).toContain("16 days earlier");
+  });
+
+  it("orders by severity, and an empty dataset yields only data caveats", () => {
     const out = buildInsights(base);
     const rank = { attention: 0, watch: 1, info: 2 } as const;
     expect(out.map((i) => rank[i.severity])).toEqual([...out.map((i) => rank[i.severity])].sort());
     expect(buildInsights({ ...base, overall: metrics({ tickets: 0 }) })).toEqual([]);
+    const emptyHealth = { coverage: [{ project: "N", name: "New project", status: "active" as const, tickets: 0, first_date: null, last_date: null, snapshot_at: null, last_complete_date: null }], activeImports: [], partialImports: [], rejectedRows: [], unmappedTopics: 0, unclassifiedStatusTickets: 0 };
+    expect(buildInsights({ ...base, overall: null, health: emptyHealth }).map((i) => i.id)).toEqual(["empty-projects"]);
+  });
+});
+
+describe("per-project spike detection", () => {
+  const days = (start: string, counts: number[]) =>
+    counts.map((count, i) => {
+      const d = new Date(`${start}T00:00:00Z`);
+      d.setUTCDate(d.getUTCDate() + i);
+      return { bucket: d.toISOString().slice(0, 10), count };
+    });
+  const opts = { window: 28, threshold: 3.5, minCount: 10, rampupDays: 21 };
+
+  it("does not report an intake launch as an incident", () => {
+    // Project B launches on day 40 with a burst; combined totals would look like a spike.
+    const a = days("2026-06-01", Array.from({ length: 70 }, () => 20)).map((p) => ({ ...p, key: "A" }));
+    const b = days("2026-07-10", [120, 90, 70, 60, 50, 40, ...Array.from({ length: 25 }, () => 30)]).map((p) => ({ ...p, key: "B" }));
+    const combined = new Map<string, number>();
+    for (const p of [...a, ...b]) combined.set(p.bucket, (combined.get(p.bucket) ?? 0) + p.count);
+    expect(detectSpikes([...combined].map(([date, count]) => ({ date, count }))).length).toBeGreaterThan(0);
+    const coverage = [
+      { project: "A", first_date: "2026-06-01", last_complete_date: "2026-08-09" },
+      { project: "B", first_date: "2026-07-10", last_complete_date: "2026-08-09" },
+    ];
+    expect(detectProjectSpikes([...a, ...b], coverage, opts)).toEqual([]);
+  });
+
+  it("still finds a genuine spike inside one project", () => {
+    const counts = Array.from({ length: 60 }, () => 20);
+    counts[45] = 140;
+    const a = days("2026-06-01", counts).map((p) => ({ ...p, key: "A" }));
+    const spikes = detectProjectSpikes(a, [{ project: "A", first_date: "2026-06-01", last_complete_date: "2026-07-30" }], opts);
+    expect(spikes.map((s) => [s.project, s.date])).toEqual([["A", "2026-07-16"]]);
   });
 });
 

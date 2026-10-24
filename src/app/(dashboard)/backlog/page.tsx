@@ -62,7 +62,7 @@ async function BacklogContent({ searchParams }: { searchParams: Promise<SearchPa
     label,
     ...Object.fromEntries(projects.map((p) => [p.code, histogram.bins.find((b) => b.bucket === i && b.key === p.code)?.count ?? 0])),
   }));
-  const projectSeries = projects.map((p, i) => ({ key: p.code, label: p.name, color: projectColor(p.code, i) }));
+  const projectSeries = projects.map((p) => ({ key: p.code, label: p.name, color: projectColor(p.code) }));
   const oldestAge = backlog.oldest[0]?.age_seconds ?? null;
 
   const slowTopics = topicsM.rows.filter((t) => t.resolution_n >= 20).sort((a, b) => (b.resolution_median_s ?? 0) - (a.resolution_median_s ?? 0));
@@ -71,7 +71,7 @@ async function BacklogContent({ searchParams }: { searchParams: Promise<SearchPa
   return (
     <div className="flex flex-col gap-6">
       <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
-        <KpiCard label="Unresolved" value={fmtInt(o.open_tickets)} info="Status 'pending' or missing, and no resolution timestamp, in the latest export of each project." sub={`${fmtInt(o.pending)} pending · ${fmtInt(o.missing_status)} no status`} />
+        <KpiCard label="Unresolved" value={fmtInt(o.open_tickets)} info="Status classified as open (pending, missing, or not yet classified — see Settings → Categories) and no resolution timestamp, in the latest export of each project." sub={`${fmtInt(o.pending)} pending · ${fmtInt(o.missing_status)} no status`} />
         <KpiCard label="Unresolved over threshold" value={fmtInt(o.open_breaches)} info={`Unresolved tickets older than ${fmtDuration(resTh)} at their project's export snapshot.`} sub={`${fmtPct(ratio(o.open_breaches, o.open_tickets), 0)} of unresolved`} />
         <KpiCard label="Oldest unresolved" value={fmtDuration(oldestAge)} info="Age of the oldest unresolved ticket at its project's export snapshot (not today)." />
         <KpiCard label="Median resolution" value={fmtDuration(o.resolution_median_s)} info="Median of resolved_at − created_at for tickets with a resolution timestamp." sub={`Average ${fmtDuration(o.resolution_avg_s)}`} />
@@ -184,7 +184,7 @@ async function BacklogContent({ searchParams }: { searchParams: Promise<SearchPa
           filters={ctx.filters}
           linkBase="/projects"
           exportName="threshold_breaches"
-          colorKeys={Object.fromEntries(projects.map((p, i) => [p.code, projectColor(p.code, i)]))}
+          colorKeys={Object.fromEntries(projects.map((p) => [p.code, projectColor(p.code)]))}
           table={metricsTable(projectsM.rows, "Project", ["resolution_n", "resolution_median_s", "resolution_avg_s", "resolution_p90_s", "resolution_breach_rate", "response_n", "response_median_s", "response_breach_rate", "open_tickets", "open_breaches"])}
         />
       </section>

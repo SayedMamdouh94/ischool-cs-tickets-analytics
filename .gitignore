@@ -43,9 +43,10 @@ next-env.d.ts
 # allow the environment template
 !.env.example
 
-# original exports contain student data — never commit them
+# original exports and database backups contain student data — never commit them
 /data/raw/*
 !/data/raw/.gitkeep
+/data/backups/
 
 # local tooling
 /.claude/

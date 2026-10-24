@@ -61,7 +61,8 @@ async function main(): Promise<number> {
     check("no role: analytics denied", noneRpc.error?.code === "42501", noneRpc.error?.code ?? "allowed!");
 
     // ---- Analyst -----------------------------------------------------------------------
-    const m = await callRpc<{ rows: { key: string; tickets: number }[] }>(ana, "get_grouped_metrics", { p_filters: {}, p_dimension: "project" });
+    // The original exports live in the initial reporting cycle (explicitly scoped, so later cycles do not change this check).
+    const m = await callRpc<{ rows: { key: string; tickets: number }[] }>(ana, "get_grouped_metrics", { p_filters: { cycle: "CYCLE_2026", include_archived: true }, p_dimension: "project" });
     const byProject = Object.fromEntries((m.data?.rows ?? []).map((r) => [r.key, r.tickets]));
     const total = Object.values(byProject).reduce((a, b) => a + b, 0);
     check("analyst: total tickets = 12,969", total === 12969, String(total));
@@ -77,7 +78,7 @@ async function main(): Promise<number> {
     const errs = await ana.from("import_errors").select("raw_row").limit(1);
     check("analyst: import error payloads hidden (RLS)", (errs.data ?? []).length === 0, `${errs.data?.length ?? 0} rows`);
     const [sample] = await db.query<{ ticket_id: number }>(
-      "select ticket_id::bigint as ticket_id from public.tickets t where message is not null and exists (select 1 from public.ticket_attachments a where a.ticket_id = t.ticket_id) order by ticket_id limit 1",
+      "select ticket_id::bigint as ticket_id from public.tickets t where message is not null and exists (select 1 from public.ticket_attachments a where a.ticket_pk = t.id) and (select count(*) from public.tickets t2 where t2.ticket_id = t.ticket_id) = 1 order by ticket_id limit 1",
     );
     const someId = Number(sample?.ticket_id);
     const det = await callRpc<{ content_visible: boolean; message: string | null; attachments: unknown }>(ana, "get_ticket_detail", { p_ticket_id: someId });
@@ -90,6 +91,24 @@ async function main(): Promise<number> {
     check("analyst: settings change denied", thr.error?.code === "42501", thr.error?.code ?? "allowed!");
     const roleGrab = await ana.from("user_roles").insert({ user_id: users[1].id, role: "admin" });
     check("analyst: cannot self-promote", Boolean(roleGrab.error), roleGrab.error?.code ?? "inserted!");
+    for (const [fn, args] of [
+      ["create_import_job", { p_spec: { mode: "upsert", project_code: "DECI_4TH", filename: "x.csv", size_bytes: 10 } }],
+      ["create_project", { p_project: { code: "SMOKE_X", name: "x", program: "SMK", intake: "x", organization_id: 999999991 } }],
+      ["archive_project", { p_code: "DECI_4TH", p_reason: "smoke", p_confirm: "DECI_4TH" }],
+      ["set_topic_category", { p_topic: "x", p_category_code: "general_inquiry" }],
+      ["get_import_jobs", {}],
+    ] as const) {
+      const r = await callRpc(ana, fn, args);
+      check(`analyst: ${fn} denied`, r.error?.code === "42501", r.error?.code ?? "allowed!");
+    }
+    const anaWorker = await callRpc(ana, "worker_claim_job", { p_worker: "smoke" });
+    check("analyst: import worker functions denied", anaWorker.error?.code === "42501", anaWorker.error?.code ?? "allowed!");
+    const staged = await ana.from("import_job_rows").select("record").limit(1);
+    check("analyst: staged import rows unreachable", staged.error?.code === "42501", staged.error?.code ?? "readable!");
+    const jobs = await ana.from("import_jobs").select("id").limit(1);
+    check("analyst: import jobs hidden (RLS)", (jobs.data ?? []).length === 0, `${jobs.data?.length ?? 0} rows`);
+    const scope = await callRpc<{ cycle: string }[]>(ana, "get_scope_catalog");
+    check("analyst: reporting cycles visible", Array.isArray(scope.data) && scope.data.length > 0, scope.error?.message ?? "");
 
     // ---- Administrator -------------------------------------------------------------------
     const adet = await callRpc<{ content_visible: boolean; message: string | null; attachments: unknown[] }>(adm, "get_ticket_detail", { p_ticket_id: someId });
@@ -101,10 +120,16 @@ async function main(): Promise<number> {
     check("admin: content view recorded in audit log", Number(audit.n) === 1, `${audit.n} event(s)`);
     const page = await callRpc<unknown[]>(adm, "export_tickets_page", { p_filters: {}, p_limit: 10 });
     check("admin: ticket export allowed", Array.isArray(page.data) && page.data.length === 10, page.error?.message ?? "");
-    const dq = await callRpc<{ total: number }>(adm, "get_data_quality", { p_filters: {} });
+    const dq = await callRpc<{ total: number }>(adm, "get_data_quality", { p_filters: { cycle: "CYCLE_2026", include_archived: true } });
     check("admin: data quality total = 12,969", dq.data?.total === 12969, String(dq.data?.total));
     const appUsers = await callRpc<unknown[]>(adm, "list_app_users");
     check("admin: access management available", Array.isArray(appUsers.data), appUsers.error?.message ?? "");
+    const admWorker = await callRpc(adm, "worker_claim_job", { p_worker: "smoke" });
+    check("admin: import worker functions are service-role only", admWorker.error?.code === "42501", admWorker.error?.code ?? "allowed!");
+    const admJobs = await callRpc<unknown[]>(adm, "get_import_jobs", { p_limit: 5 });
+    check("admin: import jobs readable", Array.isArray(admJobs.data), admJobs.error?.message ?? "");
+    const anonFiles = await anon.storage.from("imports").list();
+    check("anonymous: uploaded files not listable", (anonFiles.data ?? []).length === 0, `${anonFiles.data?.length ?? 0} objects`);
   } catch (err) {
     check("smoke test completed", false, (err as Error).message);
   } finally {

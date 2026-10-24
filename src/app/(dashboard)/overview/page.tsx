@@ -33,7 +33,7 @@ export default function OverviewPage({ searchParams }: PageProps<"/overview">) {
   return (
     <DashboardPage
       title="Executive Overview"
-      description="Headline ticket volumes, statuses and handling times across all four projects, computed from the imported exports."
+      description="Headline ticket volumes, statuses and handling times for the projects of the selected reporting cycle, computed from the imported exports."
       searchParams={searchParams}
       actions={<PageActions aggregate={[{ dataset: "projects", label: "Project metrics" }, { dataset: "topics", label: "Topic metrics" }]} />}
     >
@@ -67,7 +67,7 @@ async function OverviewContent({ searchParams }: { searchParams: Promise<SearchP
 
   const projectNames = Object.fromEntries(ctx.options.projects.map((p) => [p.code, p.name]));
   const trend = pivotSeries(series, {
-    colorFor: (k, i) => projectColor(k, i),
+    colorFor: (k) => projectColor(k),
     labelFor: (k) => projectNames[k] ?? k,
     order: ctx.options.projects.map((p) => p.code),
   });
@@ -83,10 +83,14 @@ async function OverviewContent({ searchParams }: { searchParams: Promise<SearchP
         <KpiCard
           label="Total tickets"
           value={fmtInt(o.tickets)}
-          info="Number of tickets in the current filter selection, counted from the imported exports (one row per unique Ticket_ID)."
+          info="Number of tickets in the current filter selection and reporting cycle, counted from the imported exports. The change compares each project's own latest 30 complete days with the 30 days before; projects without data for both periods are left out of the comparison."
           delta={
             period.current
-              ? { value: periodDelta, label: `last ${period.current.days} d vs prior`, goodDirection: "neutral" }
+              ? {
+                  value: periodDelta,
+                  label: `vs prior ${period.days} d`,
+                  goodDirection: "neutral",
+                }
               : undefined
           }
           sub={<span>{fmtInt(o.unique_owners)} unique students</span>}
@@ -107,7 +111,7 @@ async function OverviewContent({ searchParams }: { searchParams: Promise<SearchP
           label="Completion rate"
           value={fmtPct(ratio(o.completed, o.tickets))}
           info="Completed tickets ÷ all tickets in view. Missing statuses count in the denominator and are not treated as pending."
-          sub={<span>{fmtInt(o.open_tickets)} unresolved (pending or no status)</span>}
+          sub={<span>{fmtInt(o.open_tickets)} unresolved (open statuses, no resolution time)</span>}
         />
         <KpiCard
           label="Median resolution"
@@ -152,10 +156,10 @@ async function OverviewContent({ searchParams }: { searchParams: Promise<SearchP
         >
           <BarListChart
             labelWidth={140}
-            data={projectsM.rows.map((r, i) => ({
+            data={projectsM.rows.map((r) => ({
               label: r.label,
               value: r.tickets,
-              color: projectColor(r.key, i),
+              color: projectColor(r.key),
               detail: `${fmtPct(ratio(r.tickets, o.tickets))} of tickets`,
             }))}
           />

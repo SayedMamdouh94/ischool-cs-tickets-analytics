@@ -13,7 +13,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { requireViewer } from "@/lib/auth/dal";
 import { getCrossTab, getDataQuality, getImportRuns, resolveFilterContext } from "@/lib/analytics/queries";
-import type { SearchParamsRecord } from "@/lib/filters/schema";
+import { toRpcScope, type SearchParamsRecord } from "@/lib/filters/schema";
 import { RESPONSE_KIND_LABELS, fmtCalendarDate, fmtDateTime, fmtInt, fmtPct, ratio } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
@@ -58,7 +58,7 @@ export default function DataQualityPage({ searchParams }: PageProps<"/data-quali
   return (
     <DashboardPage
       title="Data Quality"
-      description="Gaps, inconsistencies and anomalies in the imported exports, with file-level reconciliation. Field statistics respect the filters; import history and reconciliation are global."
+      description="Gaps, inconsistencies and anomalies in the imported exports, with file-level reconciliation and import health for the selected reporting cycle. Field statistics also respect the filters."
       searchParams={searchParams}
       actions={<PageActions aggregate={[{ dataset: "data_quality", label: "Missing values by field" }]} />}
     >
@@ -70,7 +70,13 @@ export default function DataQualityPage({ searchParams }: PageProps<"/data-quali
 async function DataQualityContent({ searchParams }: { searchParams: Promise<SearchParamsRecord> }) {
   await requireViewer();
   const ctx = await resolveFilterContext(await searchParams);
-  const [dq, runs, statusByProject] = await Promise.all([getDataQuality(ctx.rpc), getImportRuns(100), getCrossTab({}, "status", "project")]);
+  const scope = toRpcScope(ctx.filters);
+  const [dq, runs, statusByProject] = await Promise.all([getDataQuality(ctx.rpc), getImportRuns(100), getCrossTab(scope, "status", "project")]);
+  const scopeProjects = new Set(ctx.options.projects.map((p) => p.code));
+  const unmappedTickets = dq.unmapped_topics.reduce((a, t) => a + t.tickets, 0);
+  const unclassifiedTickets = dq.unclassified_statuses.reduce((a, t) => a + t.tickets, 0);
+  const runningJobs = dq.import_jobs.filter((j) => j.status === "importing");
+  const partialJobs = dq.import_jobs.filter((j) => j.status === "failed" && j.rows_applied > 0);
   const c = dq.consistency as Record<string, number>;
   const total = dq.total;
   const rejectedImportRows = dq.import_errors.reduce((a, e) => a + e.count, 0);
@@ -89,7 +95,11 @@ async function DataQualityContent({ searchParams }: { searchParams: Promise<Sear
     { name: "Repeat submissions (same student, session and topic)", count: dq.repeat_submissions.same_session_tickets, kind: dq.repeat_submissions.same_session_tickets ? "pattern" : "ok", note: `${fmtInt(dq.repeat_submissions.same_session_groups)} groups. Possible duplicates by the same student; counted as separate tickets.` },
     { name: "Repeat submissions (same student, topic and day)", count: dq.repeat_submissions.same_day_topic_tickets, kind: dq.repeat_submissions.same_day_topic_tickets ? "pattern" : "ok", note: `${fmtInt(dq.repeat_submissions.same_day_topic_groups)} groups.` },
     { name: "Bulk resolution events (10+ at the same second)", count: dq.bulk_resolution_events.reduce((a, b) => a + b.tickets, 0), kind: dq.bulk_resolution_events.length ? "pattern" : "ok", note: `${fmtInt(dq.bulk_resolution_events.length)} events. Resolution durations reflect batch closure time.` },
-    { name: "Duplicate ticket IDs in database", count: dq.duplicate_ticket_ids_in_db, kind: dq.duplicate_ticket_ids_in_db ? "error" : "ok", note: "Ticket_ID is the primary key; cross-project collisions are rejected at import." },
+    { name: "Ticket IDs present in more than one project of this view", count: dq.duplicate_ticket_ids_in_db, kind: dq.duplicate_ticket_ids_in_db ? "anomaly" : "ok", note: "Ticket_IDs are unique within a project. The same ID in two projects of one view usually means archived and replacement data are both shown (history view)." },
+    { name: "Topics not mapped to a category", count: unmappedTickets, kind: unmappedTickets ? "anomaly" : "ok", note: `${fmtInt(dq.unmapped_topics.length)} topic(s); counted as Uncategorized until mapped in Settings → Categories.` },
+    { name: "Status values not classified as open or closed", count: unclassifiedTickets, kind: unclassifiedTickets ? "anomaly" : "ok", note: "Counted as open in backlog figures (so they are never hidden) until classified in Settings → Categories." },
+    { name: "Imports in progress", count: runningJobs.reduce((a, j) => a + (j.rows_to_apply ?? 0) - j.rows_applied, 0), kind: runningJobs.length ? "pattern" : "ok", note: `${fmtInt(runningJobs.length)} import(s) running; their projects' figures are incomplete until they finish.` },
+    { name: "Imports stopped part-way", count: partialJobs.length, kind: partialJobs.length ? "error" : "ok", note: "Some batches were applied before the import failed. Retry it from Settings & Imports to complete it." },
     { name: "Rejected import records", count: rejectedImportRows, kind: rejectedImportRows ? "error" : "ok", note: "Rows that failed validation or mapping; logged in import_errors, never silently dropped." },
     { name: "Timestamp offsets inconsistent with Africa/Cairo", count: offsetMismatches, kind: offsetMismatches ? "anomaly" : "ok", note: "Offsets (+0200 / +0300) checked against Egypt's daylight-saving rules at import." },
   ];
@@ -187,16 +197,90 @@ async function DataQualityContent({ searchParams }: { searchParams: Promise<Sear
           table={{
             columns: [
               { key: "name", label: "Project" },
+              { key: "state", label: "Status" },
               { key: "tickets", label: "Tickets", kind: "int" },
               { key: "first_date", label: "First ticket", kind: "date" },
               { key: "last_date", label: "Last ticket", kind: "date" },
               { key: "active_days", label: "Days with tickets", kind: "int" },
               { key: "snapshot", label: "Export snapshot (Cairo)" },
+              { key: "last_complete_date", label: "Last complete day", kind: "date" },
             ],
-            rows: dq.coverage.map((p) => ({ ...p, snapshot: fmtDateTime(p.snapshot_at) })),
+            rows: dq.coverage.map((p) => ({ ...p, state: p.status === "archived" ? "Archived" : "Active", snapshot: fmtDateTime(p.snapshot_at) })),
           }}
         />
       </section>
+
+      {(dq.unmapped_topics.length > 0 || dq.unclassified_statuses.length > 0 || dq.import_jobs.length > 0) && (
+        <section className="grid gap-4 xl:grid-cols-3">
+          <Card className="gap-3 shadow-xs">
+            <CardHeader>
+              <CardTitle className="text-sm font-semibold">Unmapped topics</CardTitle>
+              <CardDescription className="text-xs">New source topics without an analytical category (shown as Uncategorized).</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-1 text-xs">
+              {dq.unmapped_topics.length === 0 ? (
+                <p className="text-muted-foreground">All topics in view are mapped.</p>
+              ) : (
+                dq.unmapped_topics.slice(0, 12).map((t) => (
+                  <p key={t.topic} className="flex justify-between gap-3">
+                    <span dir="auto" className="user-text truncate">
+                      {t.topic}
+                    </span>
+                    <span className="tabular text-muted-foreground">{fmtInt(t.tickets)}</span>
+                  </p>
+                ))
+              )}
+              {dq.unmapped_topics.length > 0 && (
+                <Link href="/settings?tab=categories" className="inline-block pt-1 font-medium text-primary hover:underline">
+                  Map topics →
+                </Link>
+              )}
+            </CardContent>
+          </Card>
+          <Card className="gap-3 shadow-xs">
+            <CardHeader>
+              <CardTitle className="text-sm font-semibold">Unclassified status values</CardTitle>
+              <CardDescription className="text-xs">Counted as open in backlog figures until classified.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-1 text-xs">
+              {dq.unclassified_statuses.length === 0 ? (
+                <p className="text-muted-foreground">Every status in view is classified as open or closed.</p>
+              ) : (
+                dq.unclassified_statuses.map((t) => (
+                  <p key={t.status ?? "none"} className="flex justify-between gap-3">
+                    <span>{t.status ?? "(missing)"}</span>
+                    <span className="tabular text-muted-foreground">{fmtInt(t.tickets)}</span>
+                  </p>
+                ))
+              )}
+            </CardContent>
+          </Card>
+          <Card className="gap-3 shadow-xs">
+            <CardHeader>
+              <CardTitle className="text-sm font-semibold">Import health (last 90 days)</CardTitle>
+              <CardDescription className="text-xs">Running, failed and partially rejected web imports for projects in view.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-1.5 text-xs">
+              {dq.import_jobs.length === 0 ? (
+                <p className="text-muted-foreground">No running or failed imports.</p>
+              ) : (
+                dq.import_jobs.slice(0, 10).map((j) => (
+                  <p key={j.id} className="flex flex-wrap justify-between gap-x-3">
+                    <span className="truncate">
+                      {j.project} · {j.original_filename}
+                    </span>
+                    <span className={cn("whitespace-nowrap", j.status === "failed" && "text-destructive")}>
+                      {j.status.replace(/_/g, " ")}
+                      {j.status === "importing" || j.status === "failed" ? ` · ${fmtInt(j.rows_applied)}/${fmtInt(j.rows_to_apply)}` : ""}
+                      {j.status === "completed_with_errors" ? ` · ${fmtInt(j.rows_invalid)} rejected` : ""}
+                    </span>
+                  </p>
+                ))
+              )}
+            </CardContent>
+          </Card>
+        </section>
+      )}
 
       <section className="flex flex-col gap-3">
         <SectionHeading title="File-level reconciliation" description="Latest successful import of each file compared with what the database holds now (all data, filters not applied)." />
@@ -249,7 +333,7 @@ async function DataQualityContent({ searchParams }: { searchParams: Promise<Sear
       </section>
 
       <section className="flex flex-col gap-3">
-        <SectionHeading title="Import history" description="Every import attempt, including idempotent re-runs." />
+        <SectionHeading title="Import history" description="Every import attempt for the projects in view (web and command line), including idempotent re-runs." />
         <DataTable
           maxHeight={420}
           table={{
@@ -265,7 +349,7 @@ async function DataQualityContent({ searchParams }: { searchParams: Promise<Sear
               { key: "rejected", label: "Rejected", kind: "int" },
               { key: "asof", label: "Data as of" },
             ],
-            rows: runs.map((r) => ({
+            rows: runs.filter((r) => !r.project || scopeProjects.has(r.project)).map((r) => ({
               started: fmtDateTime(r.started_at),
               file: r.source_filename,
               project: r.project,

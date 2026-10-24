@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { SOURCE_COLUMNS, type SourceColumn } from "./columns";
-import { CsvStructureError, parseTicketCsv } from "./csv";
+import { CsvStructureError, parseTicketCsv, type ParsedCsvRecord } from "./csv";
 import { transformRecord, type RowError, type TransformedRow } from "./transform";
 
 export interface ProjectRef {
@@ -128,7 +128,24 @@ export function processFile(fileName: string, buffer: Buffer, projects: ProjectR
     if (/^\d{1,9}$/.test(org)) orgCounts.set(Number(org), (orgCounts.get(Number(org)) ?? 0) + 1);
   }
   const project = resolveProject(fileName, orgCounts, projects);
+  const analysis = analyzeRecords(parsed.records, project);
 
+  return { fileName, fileHash, sizeBytes: buffer.length, project, ...analysis };
+}
+
+export interface RecordAnalysis {
+  rows: TransformedRow[];
+  errors: RowError[];
+  stats: FileStats;
+}
+
+/**
+ * Validates parsed records for one project: row validation, Organization_ID
+ * check, duplicate Ticket_IDs inside the file (the row with the latest activity
+ * is kept, the others are rejected explicitly) and file-level reconciliation
+ * statistics. Shared by the CLI importer, the validator and web imports.
+ */
+export function analyzeRecords(records: ParsedCsvRecord[], project: Pick<ProjectRef, "code" | "organization_id">): RecordAnalysis {
   const rows: TransformedRow[] = [];
   const errors: RowError[] = [];
   const missing = emptyMissing();
@@ -136,7 +153,7 @@ export function processFile(fileName: string, buffer: Buffer, projects: ProjectR
   let multilineNote = 0;
   let multilineResponse = 0;
 
-  for (const rec of parsed.records) {
+  for (const rec of records) {
     for (const col of SOURCE_COLUMNS) {
       if (rec.values[col].trim() === "") missing[col]++;
     }
@@ -157,14 +174,14 @@ export function processFile(fileName: string, buffer: Buffer, projects: ProjectR
         code: "ORGANIZATION_MISMATCH",
         message: `Organization_ID ${result.row.record.organization_id} does not match project ${project.code} (${project.organization_id}).`,
         raw: rec.values,
+        column: "Organization_ID",
       });
       continue;
     }
     rows.push(result.row);
   }
 
-  // Duplicate ticket IDs inside one file: keep the row with the latest activity
-  // (ties: the later row in the file) and reject the others explicitly.
+  const byRowNumber = new Map(records.map((r) => [r.rowNumber, r]));
   const byId = new Map<number, TransformedRow[]>();
   for (const row of rows) {
     const list = byId.get(row.record.ticket_id);
@@ -184,7 +201,7 @@ export function processFile(fileName: string, buffer: Buffer, projects: ProjectR
     );
     kept.push(sorted[0]);
     for (const dup of sorted.slice(1)) {
-      const rec = parsed.records[dup.record.source_row_number - 1];
+      const rec = byRowNumber.get(dup.record.source_row_number)!;
       errors.push({
         rowNumber: dup.record.source_row_number,
         line: rec.line,
@@ -192,6 +209,7 @@ export function processFile(fileName: string, buffer: Buffer, projects: ProjectR
         code: "DUPLICATE_TICKET_IN_FILE",
         message: `Ticket ${ticketId} appears ${list.length} times in this file; kept row ${sorted[0].record.source_row_number} (latest activity).`,
         raw: rec.values,
+        column: "Ticket_ID",
       });
     }
   }
@@ -244,14 +262,10 @@ export function processFile(fileName: string, buffer: Buffer, projects: ProjectR
   const iso = (ms: number) => (Number.isFinite(ms) ? new Date(ms).toISOString() : null);
 
   return {
-    fileName,
-    fileHash,
-    sizeBytes: buffer.length,
-    project,
     rows: kept,
     errors,
     stats: {
-      records_in_file: parsed.records.length,
+      records_in_file: records.length,
       accepted: kept.length,
       rejected: errors.length,
       distinct_ticket_ids: byId.size,

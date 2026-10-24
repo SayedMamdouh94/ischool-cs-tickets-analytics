@@ -12,9 +12,15 @@ const PROJECT_SLOTS: Record<string, number> = {
   DEMI_SUMMER: 3,
 };
 
-export function projectColor(code: string, fallbackIndex = 0): string {
-  const slot = PROJECT_SLOTS[code];
-  return SERIES_COLORS[slot ?? (4 + fallbackIndex) % SERIES_COLORS.length];
+/** Projects created later get a stable slot derived from their code (never from their position in a list). */
+function hashedSlot(code: string): number {
+  let h = 0;
+  for (let i = 0; i < code.length; i++) h = (h * 31 + code.charCodeAt(i)) >>> 0;
+  return 4 + (h % 4);
+}
+
+export function projectColor(code: string): string {
+  return SERIES_COLORS[PROJECT_SLOTS[code] ?? hashedSlot(code)];
 }
 
 export const PROGRAM_COLORS: Record<string, string> = { DECI: SERIES_COLORS[0], DEMI: SERIES_COLORS[2] };

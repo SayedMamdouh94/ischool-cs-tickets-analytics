@@ -11,8 +11,9 @@ import { ACCENT, INTAKE_GROUP_COLORS, PROGRAM_COLORS, SERIES_COLORS, projectColo
 import { DataTable } from "@/components/dashboard/data-table";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { requireViewer } from "@/lib/auth/dal";
-import { getPeriodComparison, getVolumeSeries, getWeekdayHour, resolveFilterContext } from "@/lib/analytics/queries";
-import { detectSpikes } from "@/lib/analytics/anomalies";
+import { getPeriodComparison, getSettings, getVolumeSeries, getWeekdayHour, resolveFilterContext } from "@/lib/analytics/queries";
+import { detectProjectSpikes } from "@/lib/analytics/anomalies";
+import { describePeriods, rulesFrom } from "@/lib/analytics/insights";
 import { pivotSeries, totalsByBucket } from "@/lib/analytics/shape";
 import { relativeChange } from "@/lib/analytics/stats";
 import type { Grain, SeriesSplit } from "@/lib/analytics/types";
@@ -45,12 +46,15 @@ async function TrendsContent({ searchParams }: { searchParams: Promise<SearchPar
   const grain = pickParam(sp, "grain", GRAINS, "week") as Grain;
   const split = pickParam(sp, "split", SPLITS, "project") as SeriesSplit;
 
-  const [series, daily, heat, periodTopics, periodProjects, topicWeekly] = await Promise.all([
+  const rules = rulesFrom((await getSettings()).insight_rules);
+  const days = ctx.range.from ? null : rules.trend_window_days;
+  const [series, daily, dailyByProject, heat, periodTopics, periodProjects, topicWeekly] = await Promise.all([
     getVolumeSeries(ctx.rpc, grain, split),
     getVolumeSeries(ctx.rpc, "day", "none"),
+    getVolumeSeries(ctx.rpc, "day", "project"),
     getWeekdayHour(ctx.rpc),
-    getPeriodComparison(ctx.rpc, "topic", ctx.range.from ? null : 30),
-    getPeriodComparison(ctx.rpc, "project", ctx.range.from ? null : 30),
+    getPeriodComparison(ctx.rpc, "topic", days),
+    getPeriodComparison(ctx.rpc, "project", days),
     getVolumeSeries(ctx.rpc, grain === "day" ? "week" : grain, "topic"),
   ]);
   if (daily.points.length === 0) return <EmptyState />;
@@ -58,14 +62,31 @@ async function TrendsContent({ searchParams }: { searchParams: Promise<SearchPar
   const projectNames = Object.fromEntries(ctx.options.projects.map((p) => [p.code, p.name]));
   const trend = pivotSeries(series, {
     colorFor: (k, i) =>
-      split === "project" ? projectColor(k, i) : split === "program" ? (PROGRAM_COLORS[k] ?? SERIES_COLORS[i]) : split === "intake_group" ? (INTAKE_GROUP_COLORS[k] ?? SERIES_COLORS[i]) : ACCENT,
+      split === "project" ? projectColor(k) : split === "program" ? (PROGRAM_COLORS[k] ?? SERIES_COLORS[i]) : split === "intake_group" ? (INTAKE_GROUP_COLORS[k] ?? SERIES_COLORS[i]) : ACCENT,
     labelFor: (k) => (split === "project" ? (projectNames[k] ?? k) : k === "all" ? "Tickets" : k),
     order: split === "project" ? ctx.options.projects.map((p) => p.code) : undefined,
   });
 
-  const spikes = detectSpikes(totalsByBucket(daily));
+  // Unusual days are detected per project (each against its own baseline, intake launches excluded).
+  const spikes = detectProjectSpikes(dailyByProject.points, ctx.options.coverage, {
+    window: rules.spike_window_days,
+    threshold: rules.spike_threshold,
+    minCount: rules.spike_min_count,
+    rampupDays: rules.spike_rampup_days,
+  });
+  const totals = new Map(totalsByBucket(daily).map((d) => [d.date, d.count]));
+  const spikeDays = [...new Set(spikes.map((s) => s.date))];
   const markers =
-    grain === "day" && split === "none" ? spikes.map((s) => ({ bucket: s.date, value: s.count, label: `${s.count} tickets` })) : [];
+    grain === "day" && split === "none"
+      ? spikeDays.map((d) => ({
+          bucket: d,
+          value: totals.get(d) ?? 0,
+          label: `${spikes
+            .filter((s) => s.date === d)
+            .map((s) => `${projectNames[s.project] ?? s.project}: ${s.count}`)
+            .join(", ")} tickets`,
+        }))
+      : [];
 
   const weekday = WEEKDAY_LABELS.map((label, i) => ({
     label,
@@ -81,8 +102,8 @@ async function TrendsContent({ searchParams }: { searchParams: Promise<SearchPar
   const periodTable = (p: typeof periodTopics, label: string, labelFor?: (k: string) => string) => ({
     columns: [
       { key: "label", label },
-      { key: "current", label: p.current ? `${fmtCalendarDate(p.current.from)} – ${fmtCalendarDate(p.current.to)}` : "Current", kind: "int" as const },
-      { key: "previous", label: p.previous ? `${fmtCalendarDate(p.previous.from)} – ${fmtCalendarDate(p.previous.to)}` : "Previous", kind: "int" as const },
+      { key: "current", label: p.mode === "aligned" ? `Latest ${p.days} days` : p.current ? `${fmtCalendarDate(p.current.from)} – ${fmtCalendarDate(p.current.to)}` : "Current", kind: "int" as const },
+      { key: "previous", label: p.mode === "aligned" ? `Preceding ${p.days} days` : p.previous ? `${fmtCalendarDate(p.previous.from)} – ${fmtCalendarDate(p.previous.to)}` : "Previous", kind: "int" as const },
       { key: "change", label: "Change", kind: "int" as const },
       { key: "pct", label: "Change %", kind: "pct" as const },
     ],
@@ -111,7 +132,7 @@ async function TrendsContent({ searchParams }: { searchParams: Promise<SearchPar
         title={`${grain === "day" ? "Daily" : grain === "week" ? "Weekly" : "Monthly"} ticket volume`}
         description={
           grain === "day" && split === "none"
-            ? `Orange markers flag unusually high days (robust z ≥ 3.5 against the trailing 28-day median; ${spikes.length} found).`
+            ? `Orange markers flag days on which a project was unusually busy against its own trailing ${rules.spike_window_days}-day median (robust z ≥ ${rules.spike_threshold}; first ${rules.spike_rampup_days} days of each intake excluded; ${spikeDays.length} found).`
             : "Switch to Daily + Total to see statistically unusual days. Partial first/last periods are expected at the data boundaries."
         }
         table={{ columns: [{ key: "bucket", label: grain === "month" ? "Month" : grain === "week" ? "Week starting" : "Date", kind: "date" }, ...trend.series.map((s) => ({ key: s.key, label: s.label, kind: "int" as const }))], rows: trend.data }}
@@ -180,8 +201,8 @@ async function TrendsContent({ searchParams }: { searchParams: Promise<SearchPar
             <CardTitle className="text-sm font-semibold">Period-over-period by topic</CardTitle>
             <CardDescription className="text-xs">
               {periodTopics.current && periodTopics.previous
-                ? `${periodTopics.current.days}-day period ending ${fmtCalendarDate(periodTopics.current.to)} vs. the ${periodTopics.previous.days} days before. ${ctx.range.from ? "Uses the selected date range." : "Select a date range to compare a different period."}`
-                : "Not enough data."}
+                ? `${describePeriods(periodTopics, projectNames)} ${ctx.range.from ? "Uses the selected date range." : "Select a date range to compare one calendar period instead."}`
+                : "Not enough comparable data: no project has complete data for both periods."}
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -191,12 +212,19 @@ async function TrendsContent({ searchParams }: { searchParams: Promise<SearchPar
         <Card className="gap-3 shadow-xs">
           <CardHeader>
             <CardTitle className="text-sm font-semibold">Period-over-period by project</CardTitle>
-            <CardDescription className="text-xs">Same periods as the topic comparison. A project whose intake had ended will show a natural decline.</CardDescription>
+            <CardDescription className="text-xs">
+              Same windows as the topic comparison (each project over its own data). Projects without complete data for both periods are excluded rather than shown as a decline.
+            </CardDescription>
           </CardHeader>
           <CardContent>
             <DataTable table={periodTable(periodProjects, "Project", (k) => projectNames[k] ?? k)} maxHeight={380} />
             <p className="mt-2 text-xs text-muted-foreground">
-              Total: {fmtInt(periodProjects.rows.reduce((a, r) => a + r.current, 0))} vs {fmtInt(periodProjects.rows.reduce((a, r) => a + r.previous, 0))} tickets.
+              Total of compared projects: {fmtInt(periodProjects.totals.current)} vs {fmtInt(periodProjects.totals.previous)} tickets.
+              {periodProjects.projects.some((x) => !x.included && x.reason !== "no_data") &&
+                ` Excluded: ${periodProjects.projects
+                  .filter((x) => !x.included && x.reason !== "no_data")
+                  .map((x) => projectNames[x.project] ?? x.project)
+                  .join(", ")}.`}
             </p>
           </CardContent>
         </Card>

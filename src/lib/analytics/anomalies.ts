@@ -64,3 +64,46 @@ export function detectSpikes(
   }
   return spikes;
 }
+
+export interface ProjectSpike extends Spike {
+  project: string;
+}
+
+/**
+ * Spike detection per project. Each project is compared only with its own
+ * trailing baseline, days in the first `rampupDays` after its first ticket are
+ * never flagged (an intake launch is not an incident), and the last, partial
+ * export day is ignored. Combining projects would let one project's launch or
+ * export gap look like an anomaly in the total.
+ */
+export function detectProjectSpikes(
+  points: { bucket: string; key: string; count: number }[],
+  coverage: { project: string; first_date: string | null; last_complete_date: string | null }[],
+  opts: { window: number; threshold: number; minCount: number; rampupDays: number },
+): ProjectSpike[] {
+  const byProject = new Map<string, DailyPoint[]>();
+  for (const p of points) {
+    const list = byProject.get(p.key) ?? [];
+    list.push({ date: p.bucket, count: p.count });
+    byProject.set(p.key, list);
+  }
+  const out: ProjectSpike[] = [];
+  for (const [project, series] of byProject) {
+    const cov = coverage.find((c) => c.project === project);
+    const first = cov?.first_date ?? [...series].sort((a, b) => a.date.localeCompare(b.date))[0]?.date;
+    const last = cov?.last_complete_date ?? null;
+    const rampEnd = first ? addDays(first, opts.rampupDays) : null;
+    const usable = last ? series.filter((p) => p.date <= last) : series;
+    for (const s of detectSpikes(usable, { window: opts.window, threshold: opts.threshold, minCount: opts.minCount })) {
+      if (rampEnd && s.date < rampEnd) continue;
+      out.push({ ...s, project });
+    }
+  }
+  return out.sort((a, b) => a.date.localeCompare(b.date) || a.project.localeCompare(b.project));
+}
+
+function addDays(iso: string, days: number): string {
+  const d = new Date(`${iso}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}

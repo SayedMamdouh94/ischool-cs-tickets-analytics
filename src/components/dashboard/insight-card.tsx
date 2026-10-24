@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { AlertTriangle, ArrowRight, Eye, Info } from "lucide-react";
+import { AlertTriangle, ArrowRight, Eye, Info, Lightbulb } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import type { Insight } from "@/lib/analytics/insights";
@@ -10,6 +10,12 @@ const SEVERITY = {
   attention: { label: "Needs attention", icon: AlertTriangle, className: "text-[var(--status-critical)]" },
   watch: { label: "Watch", icon: Eye, className: "text-[var(--status-serious)]" },
   info: { label: "Context", icon: Info, className: "text-muted-foreground" },
+} as const;
+
+const KIND = {
+  observation: { label: "Observation", className: "font-normal" },
+  recommendation: { label: "Recommendation", className: "border-primary/40 font-medium text-primary" },
+  caveat: { label: "Data caveat", className: "border-amber-500/50 font-normal text-amber-800 dark:text-amber-300" },
 } as const;
 
 const AREA_LABELS: Record<Insight["area"], string> = {
@@ -35,9 +41,14 @@ export function InsightCard({ insight, filters, compact = false }: { insight: In
             <Icon className="size-3.5" aria-hidden />
             {sev.label}
           </span>
-          <Badge variant="outline" className="font-normal">
-            {AREA_LABELS[insight.area]}
+          <Badge variant="outline" className={KIND[insight.kind].className}>
+            {KIND[insight.kind].label}
           </Badge>
+          {insight.area !== "data" && (
+            <Badge variant="outline" className="font-normal text-muted-foreground">
+              {AREA_LABELS[insight.area]}
+            </Badge>
+          )}
         </div>
         <p className="user-text text-sm font-semibold leading-snug" dir="auto">
           {insight.title}
@@ -45,6 +56,21 @@ export function InsightCard({ insight, filters, compact = false }: { insight: In
         <p className="user-text text-sm text-muted-foreground" dir="auto">
           {insight.statement}
         </p>
+        {insight.recommendation && (
+          <p className="flex items-start gap-1.5 rounded-md border border-primary/20 bg-primary/5 p-2 text-xs">
+            <Lightbulb className="mt-0.5 size-3.5 shrink-0 text-primary" aria-hidden />
+            <span>
+              <span className="font-medium">Suggested action: </span>
+              {insight.recommendation}
+            </span>
+          </p>
+        )}
+        {!compact && insight.method && (
+          <details className="text-xs text-muted-foreground">
+            <summary className="cursor-pointer select-none font-medium text-foreground/80">How this was compared</summary>
+            <p className="mt-1">{insight.method}</p>
+          </details>
+        )}
         {!compact && insight.evidence.length > 0 && (
           <dl className="mt-1 grid gap-1 rounded-md bg-muted/50 p-2.5 text-xs">
             {insight.evidence.map((e) => (

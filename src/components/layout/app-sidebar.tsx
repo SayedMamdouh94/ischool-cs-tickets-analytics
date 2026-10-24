@@ -66,7 +66,7 @@ export function AppSidebar() {
                 </div>
                 <div className="grid flex-1 text-left text-sm leading-tight">
                   <span className="truncate font-semibold">CS Tickets Analytics</span>
-                  <span className="truncate text-xs text-muted-foreground">DECI · DEMI</span>
+                  <span className="truncate text-xs text-muted-foreground">Support ticket analytics</span>
                 </div>
               </Link>
             </SidebarMenuButton>

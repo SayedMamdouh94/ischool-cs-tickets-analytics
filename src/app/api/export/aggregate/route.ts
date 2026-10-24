@@ -12,7 +12,7 @@ import {
   getVolumeSeries,
 } from "@/lib/analytics/queries";
 import { metricsTable, type MetricColumn } from "@/lib/analytics/tables";
-import { parseFilters, resolveDateRange, toRpcFilters, type RpcFilters } from "@/lib/filters/schema";
+import { parseFilters, resolveDateRange, toRpcFilters, toRpcScope, type RpcFilters } from "@/lib/filters/schema";
 import { DURATION_BUCKET_LABELS, keyLabel } from "@/lib/format";
 import { toCsv, type TableData } from "@/lib/table-data";
 import { callRpc } from "@/lib/supabase/rpc";
@@ -102,7 +102,7 @@ export async function GET(request: NextRequest) {
   if (!build) return Response.json({ error: "Unknown dataset" }, { status: 400 });
 
   const filters = parseFilters(params);
-  const [options, settings] = await Promise.all([getFilterOptions(), getSettings()]);
+  const [options, settings] = await Promise.all([getFilterOptions(toRpcScope(filters)), getSettings()]);
   const range = resolveDateRange(filters, { datasetMax: options.date_range.max, anchor: settings.app.date_preset_anchor === "today" ? "today" : "dataset_end" });
   const rpcFilters = toRpcFilters(filters, range);
   const table = await build(rpcFilters);

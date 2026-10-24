@@ -26,7 +26,7 @@ export const NAV_SECTIONS: { label: string; items: NavItem[] }[] = [
     label: "Analytics",
     items: [
       { href: "/overview", title: "Executive Overview", icon: LayoutDashboard, description: "Headline KPIs and trends" },
-      { href: "/projects", title: "Projects", icon: FolderKanban, description: "Compare the four projects" },
+      { href: "/projects", title: "Projects", icon: FolderKanban, description: "Compare projects" },
       { href: "/trends", title: "Ticket Trends", icon: TrendingUp, description: "Volume over time" },
       { href: "/topics", title: "Topics & Complaints", icon: MessagesSquare, description: "What students report" },
       { href: "/team", title: "Support Team", icon: Users, description: "Workload and handling" },
@@ -67,6 +67,8 @@ export const GLOBAL_FILTER_PARAMS = [
   "preset",
   "from",
   "to",
+  "cycle",
+  "archived",
 ];
 
 export function filterQuery(params: URLSearchParams | null): string {

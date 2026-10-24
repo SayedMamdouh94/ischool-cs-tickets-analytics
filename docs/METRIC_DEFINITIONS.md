@@ -1,6 +1,13 @@
 # Metric definitions
 
-All metrics are computed in PostgreSQL from the imported tickets that match the active filters. Durations are reported in seconds by the database and formatted in the UI (minutes, hours or days).
+All metrics are computed in PostgreSQL from the imported tickets that match the active filters **within one reporting cycle**. Durations are reported in seconds by the database and formatted in the UI (minutes, hours or days).
+
+## Scope (reporting cycles)
+
+- Every page analyses exactly **one reporting cycle** — by default the cycle marked *current* in Settings → Projects. Cycles are never combined.
+- Within the selected cycle only **active** projects are included. Archived projects appear only when the user switches on "Include archived projects" in the cycle selector (the page then says so). Selecting an archived cycle shows all of its (archived) projects as a historical view.
+- Draft projects (an "Archive & start new" import still running) are never included anywhere.
+- The URL carries the scope (`?cycle=CODE&archived=1`), so shared links reproduce the same view.
 
 ## Calendar and time zone
 
@@ -17,7 +24,7 @@ All metrics are computed in PostgreSQL from the imported tickets that match the 
 | Completed / Pending / Rejected | Count where `status` equals the value in the latest export. |
 | Missing status | Count where `status` is NULL. Never counted as pending. |
 | Completion rate | Completed ÷ all tickets (missing statuses stay in the denominator). |
-| Unresolved | `resolved_at IS NULL` and status is `pending` or NULL. |
+| Unresolved (open) | `resolved_at IS NULL` and the status is classified as **open** in Settings → Categories → Status values (by default `pending` and a missing status). A status value that has not been classified yet also counts as open — so it is never hidden — and is flagged in Data Quality and Insights until an administrator classifies it. `completed` and `rejected` are closed. |
 | Unique students | Distinct `owner_id`. |
 | Response recorded (coverage) | Tickets with `responded_at` ÷ all tickets. |
 | Resolution recorded (coverage) | Tickets with `resolved_at` ÷ all tickets. |
@@ -69,26 +76,36 @@ No contractual SLA, priority or satisfaction data exists in the exports; none is
 ## Trends
 
 - Volume series: tickets per creation day/week/month (Cairo); missing periods are shown as zero.
-- **Period-over-period**: the selected range (or, with no range, the last 30 days of data) vs. the immediately preceding period of equal length.
-- **Unusual days**: a day is flagged when its count ≥ 10 and its robust z-score `(count − median₂₈) / max(1.4826·MAD₂₈, √median₂₈)` ≥ 3.5, where median₂₈ and MAD₂₈ are computed over the previous 28 days and median₂₈ ≥ 5 (so the start of an intake is not flagged). Flags describe that volume rose, never why.
+- **Period-over-period** respects each project's data coverage, because projects are exported on different dates:
+  - *No date range selected* (default): every project is compared over **its own** latest N complete days (ending the day before its export snapshot; N = 30, configurable as "Trend comparison window") versus the N days before that.
+  - *Date range selected*: one calendar window for everyone, compared with the preceding window of equal length.
+  - In both modes a project is **excluded** from the comparison (and the exclusion is shown) when it had no tickets yet at the start of the previous window (an intake launch would look like growth) or, for a calendar window, when its export ends before the window ends.
+  - The page states the exact windows per project.
+- **Unusual days** are detected **per project**: a day is flagged when the project's count ≥ 10 (configurable) and its robust z-score `(count − median₂₈) / max(1.4826·MAD₂₈, √median₂₈)` ≥ 3.5 (configurable), where median₂₈ and MAD₂₈ are computed over that project's previous 28 days and median₂₈ ≥ 5. The first 21 days after a project's first ticket (configurable "Intake ramp-up period") and the partial last export day are never flagged. Combining projects would let one intake's launch look like an incident. Flags describe that volume rose, never why.
 
 ## Topics, categories and themes
 
 - **Topic** — the source value chosen by the student; describes the request, not a verified cause.
-- **Category** — analytical grouping of topics (`ticket_categories.source_topics`).
+- **Category** — analytical grouping of topics (`topic_categories`, maintained by administrators in Settings → Categories; changes reclassify existing tickets immediately). Unmapped topics are counted as "Uncategorized" and flagged.
 - **Issue theme** — primary keyword theme detected in the free-text details (`rules-v1`). "Structured request" = no free text; "Other / unmatched" = text present but no rule matched. Indicative only.
 - **Recurring sessions** — sessions referenced by ≥ 2 different students. In the current exports a Session ID identifies one student's booking, so recurrence is read at lesson level (distinct students per lesson name).
 
 ## Insight rules
 
-| Insight | Rule |
-| --- | --- |
-| Volume leader | Project with the most tickets in view, with its share. |
-| Rising / falling topic | Current period ≥ 20 tickets and change ≥ ±50% vs. the previous period. |
-| Slower topic | ≥ 30 resolved tickets and median resolution ≥ 1.25× the overall median. |
-| Outstanding issues | Unresolved tickets by project, with counts over the threshold. |
-| Dominant theme | A theme covering ≥ 40% of a topic with ≥ 100 tickets. |
-| Lesson hotspots | Lessons referenced by ≥ 50 different students. |
-| Unusual days | See trends. |
-| Threshold breaches | Share of resolved tickets over the resolution threshold, by project. |
-| Response caveat | Shown when > 50% of responses are templated acknowledgements. |
+Every insight is labelled **Observation** (describes the data), **Recommendation** (adds a suggested next step grounded in the evidence) or **Data caveat** (limits how figures should be read). No insight asserts a cause. All thresholds below are defaults stored in `insight_rules` and editable by administrators in Settings → Thresholds; insights are recomputed on every page load, so they follow new imports and disappear when their condition no longer holds.
+
+| Insight | Kind | Rule (defaults) |
+| --- | --- | --- |
+| Volume distribution | Observation | Project with the most tickets in view, its share, and tickets per student for every project. |
+| Topic taking a larger / smaller share | Recommendation / Observation | Compares the topic's **share of all tickets** in the latest vs. preceding period (per-project windows, see Trends), so overall growth is not mistaken for a topic trend. Reported when the topic has ≥ 20 tickets (current, or previous for falling), its share changed by ≥ 50%, and a two-proportion z-test reaches \|z\| ≥ 1.96. Ranked by \|z\|. The card explains the windows and exclusions. |
+| Trend comparison unavailable | Data caveat | No project in view has complete data for both periods. |
+| Slower topic | Recommendation | ≥ 30 resolved tickets and median resolution ≥ 1.25× the overall median; ranked by tickets affected. |
+| Outstanding issues | Observation / Recommendation | Unresolved tickets and open rate by project, with counts over the resolution threshold (recommendation when any are over it). |
+| Dominant theme | Recommendation | A theme covering ≥ 40% of a topic with ≥ 100 tickets; ranked by matching tickets (not alphabetically). |
+| Recurring sessions / lesson hotspots | Observation / Recommendation | Sessions reported by ≥ 2 students; lessons referenced by ≥ 50 students. |
+| Unusual days | Recommendation | Per-project spikes (see Trends). |
+| Threshold breaches | Observation | Share of resolved tickets over the resolution threshold (watch > 20%, attention > 50%), by project. |
+| Outdated exports | Data caveat | A project's export ends ≥ 7 days before the newest export in view. |
+| Import in progress / stopped part-way / rejected rows | Data caveat | From the import jobs and latest runs of projects in view. |
+| Unmapped topics / unclassified statuses / empty projects | Data caveat | Counts in view; links to Settings → Categories. |
+| Response caveat | Data caveat | Shown when > 50% of responses are templated acknowledgements. |

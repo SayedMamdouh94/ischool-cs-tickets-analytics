@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { Suspense } from "react";
 import { DashboardPage } from "@/components/dashboard/dashboard-page";
 import { PageActions } from "@/components/dashboard/page-actions";
-import { TicketDetailView } from "@/components/tickets/ticket-detail";
+import { AmbiguousTicketChoice, TicketDetailView } from "@/components/tickets/ticket-detail";
 import { TicketDrawer } from "@/components/tickets/ticket-drawer";
 import { TicketSearchBox, TicketTable } from "@/components/tickets/ticket-table";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -55,6 +55,7 @@ async function TicketsContent({ searchParams }: { searchParams: Promise<SearchPa
   });
   const ticketParam = pickString(sp, "ticket", 18);
   const ticketId = ticketParam && /^\d+$/.test(ticketParam) ? Number(ticketParam) : null;
+  const ticketProject = pickString(sp, "tproject", 40) ?? null;
 
   return (
     <div className="flex flex-col gap-4">
@@ -64,9 +65,9 @@ async function TicketsContent({ searchParams }: { searchParams: Promise<SearchPa
       </div>
       <TicketTable result={result} />
       {ticketId !== null && (
-        <TicketDrawer ticketId={ticketId}>
+        <TicketDrawer ticketId={ticketId} projectCode={ticketProject}>
           <Suspense fallback={<Skeleton className="h-96 w-full" />}>
-            <DrawerDetail ticketId={ticketId} />
+            <DrawerDetail ticketId={ticketId} projectCode={ticketProject} />
           </Suspense>
         </TicketDrawer>
       )}
@@ -74,8 +75,9 @@ async function TicketsContent({ searchParams }: { searchParams: Promise<SearchPa
   );
 }
 
-async function DrawerDetail({ ticketId }: { ticketId: number }) {
-  const ticket = await getTicketDetail(ticketId);
+async function DrawerDetail({ ticketId, projectCode }: { ticketId: number; projectCode: string | null }) {
+  const ticket = await getTicketDetail(ticketId, projectCode);
   if (!ticket) return <p className="text-sm text-muted-foreground">Ticket not found.</p>;
+  if (ticket.ambiguous) return <AmbiguousTicketChoice ticket={ticket} />;
   return <TicketDetailView ticket={ticket} />;
 }

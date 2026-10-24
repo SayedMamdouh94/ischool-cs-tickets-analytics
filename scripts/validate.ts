@@ -148,9 +148,9 @@ async function validateFile(db: Db, pf: ProcessedFile): Promise<void> {
        (select count(*) filter (where resolution_seconds >= 0)::int from t) as sn,
        (select round((percentile_cont(0.5) within group (order by resolution_seconds) filter (where resolution_seconds >= 0))::numeric)::float8 from t) as smed,
        (select round((percentile_cont(0.9) within group (order by resolution_seconds) filter (where resolution_seconds >= 0))::numeric)::float8 from t) as sp90,
-       (select count(*)::int from public.ticket_attachments a join t on t.ticket_id = a.ticket_id where a.attachment_type = 'request') as att_req,
-       (select count(*)::int from public.ticket_attachments a join t on t.ticket_id = a.ticket_id where a.attachment_type = 'response') as att_resp,
-       (select count(*)::int from public.ticket_classifications c join t on t.ticket_id = c.ticket_id where c.is_current) as classified`,
+       (select count(*)::int from public.ticket_attachments a join t on t.id = a.ticket_pk where a.attachment_type = 'request') as att_req,
+       (select count(*)::int from public.ticket_attachments a join t on t.id = a.ticket_pk where a.attachment_type = 'response') as att_resp,
+       (select count(*)::int from public.ticket_classifications c join t on t.id = c.ticket_pk where c.is_current) as classified`,
     [pid],
   );
 
@@ -221,30 +221,43 @@ async function main(): Promise<number> {
   const db = connectDb();
   console.log(`Validating ${files.length} file(s) against ${db.target} [${db.kind}]\n`);
   try {
+    // Files map to non-draft projects (an archived project still holds its original export).
     const projects = await db.query<ProjectRef>(
-      "select id::text as id, code, name, organization_id::int as organization_id, file_name_hint from public.projects",
+      "select id::text as id, code, name, organization_id::int as organization_id, file_name_hint from public.projects where status <> 'draft' order by (status = 'active') desc, display_order",
     );
     let fileTotal = 0;
     const allIds = new Set<number>();
+    const mapped = new Set<string>();
     for (const f of files) {
       const pf = processFile(f, readFileSync(path.join(dir, f)), projects);
       fileTotal += pf.stats.accepted;
+      mapped.add(pf.project.id);
       for (const r of pf.rows) allIds.add(r.record.ticket_id);
       await validateFile(db, pf);
     }
-    const [{ total, distinct_ids }] = await db.query<{ total: number; distinct_ids: number }>(
-      "select count(*)::int as total, count(distinct ticket_id)::int as distinct_ids from public.tickets",
+    const [{ total, distinct_keys, all_projects }] = await db.query<{ total: number; distinct_keys: number; all_projects: number }>(
+      `with m as (select (jsonb_array_elements_text($1::jsonb))::uuid as id)
+       select count(*) filter (where project_id in (select id from m))::int as total,
+              count(distinct (project_id, ticket_id)) filter (where project_id in (select id from m))::int as distinct_keys,
+              count(*)::int as all_projects
+         from public.tickets`,
+      [[...mapped]],
     );
-    record("ALL", "total tickets (files vs database)", fileTotal, total);
+    record("ALL", "total tickets (files vs their projects)", fileTotal, total);
     record("ALL", "unique ticket IDs across files", fileTotal, allIds.size);
-    record("ALL", "unique ticket IDs in database", total, distinct_ids);
+    record("ALL", "unique (project, ticket ID) in database", total, distinct_keys);
+    record("ALL", "tickets in other projects (web imports, new cycles)", 0, all_projects - total, "INFO");
     const briefTotal = Object.values(BRIEF_EXPECTED_COUNTS).reduce((a, b) => a + b, 0);
     record("ALL", "total vs. project brief (initial export)", briefTotal, total, briefTotal === total ? "PASS" : "WARN");
 
-    const [runs] = await db.query<{ failed: number; running: number }>(
-      "select count(*) filter (where status = 'failed')::int as failed, count(*) filter (where status = 'running')::int as running from public.import_runs",
+    const [runs] = await db.query<{ failed: number; running: number; web_running: number }>(
+      `select count(*) filter (where status = 'failed')::int as failed,
+              count(*) filter (where status = 'running' and source = 'cli')::int as running,
+              count(*) filter (where status = 'running' and source = 'web')::int as web_running
+         from public.import_runs`,
     );
-    record("ALL", "import runs still running", 0, runs.running);
+    record("ALL", "CLI import runs still running", 0, runs.running);
+    record("ALL", "web imports in progress", 0, runs.web_running, runs.web_running === 0 ? "PASS" : "INFO");
     record("ALL", "failed import runs (history)", 0, runs.failed, runs.failed === 0 ? "PASS" : "WARN");
   } finally {
     await db.end();

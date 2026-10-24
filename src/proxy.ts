@@ -11,8 +11,14 @@ import { createServerClient } from "@supabase/ssr";
  * role checks inside every function.
  */
 const PUBLIC_PATHS = ["/login", "/auth/confirm", "/auth/callback", "/auth/session", "/auth/error"];
+/** Machine endpoints without a user session; each verifies its own credentials (bearer secret). */
+const MACHINE_PATHS = ["/api/imports/worker"];
 
 export async function proxy(request: NextRequest) {
+  if (MACHINE_PATHS.includes(request.nextUrl.pathname)) {
+    return NextResponse.next({ request });
+  }
+
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ?? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 

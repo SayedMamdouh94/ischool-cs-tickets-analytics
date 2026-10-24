@@ -7,12 +7,16 @@ import {
   parseFilters,
   resolveDateRange,
   toRpcFilters,
+  toRpcScope,
+  type RpcScope,
   type DashboardFilters,
   type DateRange,
   type RpcFilters,
   type SearchParamsRecord,
 } from "@/lib/filters/schema";
+import type { ImportIssueRow, ImportJobDetail, ImportJobListItem } from "@/lib/imports/types";
 import type {
+  AmbiguousTicket,
   AppUser,
   AuditEvent,
   Backlog,
@@ -26,7 +30,11 @@ import type {
   ImportRun,
   ImportRunDetail,
   PeriodComparison,
+  ProjectHistoryEntry,
   RecurringSessions,
+  ScopeCycle,
+  StatusValue,
+  TopicMappings,
   SeriesSplit,
   Settings,
   TicketDetail,
@@ -69,8 +77,12 @@ function call<T>(fn: string, args: Record<string, unknown> = {}): Promise<T> {
   return cachedRpc(fn, key(args)) as Promise<T>;
 }
 
-export const getFilterOptions = () => call<FilterOptions>("get_filter_options");
+export const getFilterOptions = (scope: RpcScope = {}) => call<FilterOptions>("get_filter_options", { p_scope: scope });
 export const getSettings = () => call<Settings>("get_settings");
+export const getScopeCatalog = () => call<ScopeCycle[]>("get_scope_catalog");
+export const getTopicMappings = () => call<TopicMappings>("get_topic_mappings");
+export const getStatusValues = () => call<StatusValue[]>("get_status_values");
+export const getProjectHistory = (code: string) => call<ProjectHistoryEntry[] | null>("get_project_history", { p_code: code });
 
 export interface FilterContext {
   filters: DashboardFilters;
@@ -82,8 +94,8 @@ export interface FilterContext {
 
 /** Parses URL filters and resolves the date preset against the dataset. */
 export async function resolveFilterContext(searchParams: SearchParamsRecord): Promise<FilterContext> {
-  const [options, settings] = await Promise.all([getFilterOptions(), getSettings()]);
   const filters = parseFilters(searchParams);
+  const [options, settings] = await Promise.all([getFilterOptions(toRpcScope(filters)), getSettings()]);
   const anchor = settings.app.date_preset_anchor === "today" ? "today" : "dataset_end";
   const range = resolveDateRange(filters, { datasetMax: options.date_range.max, anchor });
   return { filters, range, rpc: toRpcFilters(filters, range), options, anchor };
@@ -129,10 +141,15 @@ export const searchTickets = (
   });
 
 /** Not memoized: each detail view of raw content is audited in the database. */
-export const getTicketDetail = (ticketId: number) => rpc<TicketDetail | null>("get_ticket_detail", { p_ticket_id: ticketId });
+export const getTicketDetail = (ticketId: number, projectCode?: string | null) =>
+  rpc<TicketDetail | AmbiguousTicket | null>("get_ticket_detail", { p_ticket_id: ticketId, p_project_code: projectCode ?? null });
 
 export const getDataQuality = (f: RpcFilters) => call<DataQuality>("get_data_quality", { p_filters: f });
 export const getImportRuns = (limit = 50) => call<ImportRun[]>("get_import_runs", { p_limit: limit });
 export const getImportRunDetail = (id: string) => call<ImportRunDetail | null>("get_import_run_detail", { p_run_id: id });
 export const listAppUsers = () => call<AppUser[]>("list_app_users");
 export const getAuditEvents = (limit = 100) => call<AuditEvent[]>("get_audit_events", { p_limit: limit });
+export const getImportJobs = (limit = 50) => call<ImportJobListItem[]>("get_import_jobs", { p_limit: limit });
+export const getImportJob = (id: string) => call<ImportJobDetail | null>("get_import_job", { p_job_id: id });
+export const getImportJobIssues = (id: string, limit = 300) =>
+  call<{ total: number; issues: ImportIssueRow[] }>("get_import_job_issues", { p_job_id: id, p_severity: null, p_limit: limit, p_offset: 0 });

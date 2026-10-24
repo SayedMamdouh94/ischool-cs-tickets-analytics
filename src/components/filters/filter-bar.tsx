@@ -49,7 +49,8 @@ export function FilterBar({
   const reset = () => {
     const base = new URLSearchParams(params.toString());
     base.delete("page");
-    navigate(filtersToSearchParams(parseFilters(new URLSearchParams()), base));
+    // Reset clears the filters but keeps the chosen reporting cycle / historical view.
+    navigate(filtersToSearchParams({ ...parseFilters(new URLSearchParams()), cycle: filters.cycle, archived: filters.archived }, base));
   };
 
   const categories = options.categories.filter((c) => c.kind === "category");

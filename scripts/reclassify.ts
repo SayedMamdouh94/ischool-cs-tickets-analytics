@@ -19,8 +19,8 @@ async function main(): Promise<number> {
     let done = 0;
     for (;;) {
       // Small pages keep each request well under the HTTP transport's size limit.
-      const batch = await db.query<{ ticket_id: number; topic: string; message: string | null }>(
-        "select ticket_id::bigint as ticket_id, topic, message from public.tickets where ticket_id > $1::bigint order by ticket_id limit 300",
+      const batch = await db.query<{ id: number; topic: string; message: string | null }>(
+        "select id::bigint as id, topic, message from public.tickets where id > $1::bigint order by id limit 300",
         [after],
       );
       if (batch.length === 0) break;
@@ -28,10 +28,10 @@ async function main(): Promise<number> {
         writeClassifications(
           db,
           catalog,
-          batch.map((t) => ({ ticketId: Number(t.ticket_id), topic: t.topic, details: parseMessage(t.message).details })),
+          batch.map((t) => ({ ticketId: Number(t.id), topic: t.topic, details: parseMessage(t.message).details })),
         ),
       );
-      after = Number(batch[batch.length - 1].ticket_id);
+      after = Number(batch[batch.length - 1].id);
       done += batch.length;
     }
     console.log(`✓ ${done} tickets classified.`);

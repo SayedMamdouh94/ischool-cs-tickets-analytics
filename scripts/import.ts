@@ -61,8 +61,8 @@ const TICKET_COLUMNS: [string, string][] = [
 ];
 const COLS = TICKET_COLUMNS.map(([c]) => c).join(", ");
 const RECORDSET = TICKET_COLUMNS.map(([c, t]) => `${c} ${t}`).join(", ");
-/** first_import_run_id and imported_at are preserved on update. */
-const UPDATE_SET = TICKET_COLUMNS.filter(([c]) => c !== "ticket_id" && c !== "first_import_run_id")
+/** first_import_run_id and imported_at are preserved on update; the (project, ticket) key never changes. */
+const UPDATE_SET = TICKET_COLUMNS.filter(([c]) => c !== "ticket_id" && c !== "project_id" && c !== "organization_id" && c !== "first_import_run_id")
   .map(([c]) => `${c} = excluded.${c}`)
   .join(", ");
 
@@ -192,20 +192,33 @@ interface Existing {
   as_of_epoch: number;
 }
 
-async function prefetchExisting(db: Db, ids: number[]): Promise<Map<number, Existing>> {
-  const out = new Map<number, Existing>();
+/**
+ * Existing tickets with these source IDs in the target project, plus — to
+ * detect exports filed under the wrong project — in the other active (or
+ * draft) projects of the same reporting cycle. IDs in archived projects or
+ * other cycles are independent datasets and do not collide.
+ */
+async function prefetchExisting(db: Db, projectId: string, ids: number[]): Promise<Map<number, Existing[]>> {
+  const out = new Map<number, Existing[]>();
   for (let i = 0; i < ids.length; i += 4000) {
     const chunk = ids.slice(i, i + 4000);
     const rows = await withRetry("prefetch existing tickets", () =>
       db.query<{ ticket_id: number; project_id: string; row_hash: string; as_of_epoch: number }>(
-        `select ticket_id::bigint as ticket_id, project_id::text as project_id, row_hash,
-                extract(epoch from source_data_as_of)::float8 as as_of_epoch
-           from public.tickets
-          where ticket_id in (select (jsonb_array_elements_text($1::jsonb))::bigint)`,
-        [chunk],
+        `select t.ticket_id::bigint as ticket_id, t.project_id::text as project_id, t.row_hash,
+                extract(epoch from t.source_data_as_of)::float8 as as_of_epoch
+           from public.tickets t
+           join public.projects p on p.id = t.project_id
+          where t.ticket_id in (select (jsonb_array_elements_text($1::jsonb))::bigint)
+            and (t.project_id = $2::uuid
+                 or (p.status in ('active', 'draft') and p.cycle_id = (select cycle_id from public.projects where id = $2::uuid)))`,
+        [chunk, projectId],
       ),
     );
-    for (const r of rows) out.set(Number(r.ticket_id), { project_id: r.project_id, row_hash: r.row_hash, as_of_epoch: Number(r.as_of_epoch) });
+    for (const r of rows) {
+      const list = out.get(Number(r.ticket_id)) ?? [];
+      list.push({ project_id: r.project_id, row_hash: r.row_hash, as_of_epoch: Number(r.as_of_epoch) });
+      out.set(Number(r.ticket_id), list);
+    }
   }
   return out;
 }
@@ -238,25 +251,24 @@ function batchScript(projectId: string, rows: TransformedRow[], records: Record<
   return `
 insert into public.tickets (${COLS})
 select ${COLS} from jsonb_to_recordset(${jsonLiteral(records)}) as r(${RECORDSET})
-on conflict (ticket_id) do update set ${UPDATE_SET}, updated_at = now()
-where public.tickets.project_id = excluded.project_id
-  and public.tickets.row_hash is distinct from excluded.row_hash
+on conflict (project_id, ticket_id) do update set ${UPDATE_SET}, updated_at = now()
+where public.tickets.row_hash is distinct from excluded.row_hash
   ${forceUpdate ? "" : "and excluded.source_data_as_of >= public.tickets.source_data_as_of"};
 
 delete from public.ticket_attachments a
  using jsonb_to_recordset(${jsonLiteral(keys)}) as k(ticket_id bigint, row_hash text), public.tickets t
- where a.ticket_id = k.ticket_id and t.ticket_id = k.ticket_id and t.row_hash = k.row_hash and t.project_id = ${pid}::uuid;
+ where t.project_id = ${pid}::uuid and t.ticket_id = k.ticket_id and t.row_hash = k.row_hash and a.ticket_pk = t.id;
 ${
   attachments.length === 0
     ? ""
     : `
-insert into public.ticket_attachments (ticket_id, attachment_type, position, url, url_host, file_name, file_extension)
-select x.ticket_id, x.attachment_type, x.position, x.url, x.url_host, x.file_name, x.file_extension
+insert into public.ticket_attachments (ticket_pk, attachment_type, position, url, url_host, file_name, file_extension)
+select t.id, x.attachment_type, x.position, x.url, x.url_host, x.file_name, x.file_extension
   from jsonb_to_recordset(${jsonLiteral(attachments)}) as x(ticket_id bigint, row_hash text, attachment_type text, position smallint, url text, url_host text, file_name text, file_extension text)
-  join public.tickets t on t.ticket_id = x.ticket_id and t.row_hash = x.row_hash and t.project_id = ${pid}::uuid;
+  join public.tickets t on t.project_id = ${pid}::uuid and t.ticket_id = x.ticket_id and t.row_hash = x.row_hash;
 `
 }
-${classificationStatements(classifications)}
+${classificationStatements(classifications, { projectId })}
 `;
 }
 
@@ -286,7 +298,9 @@ async function dryRun(files: string[]): Promise<number> {
   if (optionalEnv("DATABASE_URL") || optionalEnv("DB_TRANSPORT") || optionalEnv("NEXT_PUBLIC_SUPABASE_URL")?.includes(".supabase.co")) {
     const db = connectDb();
     try {
-      projects = await db.query<ProjectRef>("select id::text as id, code, name, organization_id::int as organization_id, file_name_hint from public.projects");
+      projects = await db.query<ProjectRef>(
+        "select id::text as id, code, name, organization_id::int as organization_id, file_name_hint from public.projects where status = 'active'",
+      );
       source = `database (${db.target})`;
     } finally {
       await db.end();
@@ -339,8 +353,13 @@ async function main(): Promise<number> {
       }
       locked = true;
     }
+    const [web] = await db.query<{ n: number }>("select count(*)::int as n from public.import_jobs where status = 'importing'");
+    if (Number(web?.n ?? 0) > 0) {
+      console.error("A web import is running (Settings & Imports). Wait until it completes, then run the CLI importer.");
+      return 1;
+    }
     const active = await db.query<{ n: number }>(
-      "select count(*)::int as n from public.import_runs where status = 'running' and started_at > now() - interval '2 hours'",
+      "select count(*)::int as n from public.import_runs where status = 'running' and source = 'cli' and started_at > now() - interval '2 hours'",
     );
     if (Number(active[0]?.n ?? 0) > 0 && db.kind !== "postgres") {
       console.error("An import started less than 2 hours ago is still marked running. Aborting to avoid concurrent imports.");
@@ -349,11 +368,14 @@ async function main(): Promise<number> {
     const abandoned = await db.query<{ id: string }>(
       `update public.import_runs set status = 'failed', completed_at = now(),
               error_summary = coalesce(error_summary, 'Abandoned: the importer stopped before completing this run.')
-        where status = 'running' returning id::text as id`,
+        where status = 'running' and source = 'cli' returning id::text as id`,
     );
     if (abandoned.length > 0) console.warn(`Marked ${abandoned.length} abandoned run(s) as failed.`);
 
-    const projects = await db.query<ProjectRef>("select id::text as id, code, name, organization_id::int as organization_id, file_name_hint from public.projects");
+    // Only active projects receive imports (archived ones are read-only; drafts belong to a web job).
+    const projects = await db.query<ProjectRef>(
+      "select id::text as id, code, name, organization_id::int as organization_id, file_name_hint from public.projects where status = 'active'",
+    );
     const catalog = await loadCategoryCatalog(db);
     const seenInRun = new Map<number, { projectId: string; file: string }>();
 
@@ -433,23 +455,25 @@ async function main(): Promise<number> {
         }
 
         // Classify every row against the database (same policy as before).
-        const existing = await prefetchExisting(db, rows.map((r) => r.record.ticket_id));
+        const existing = await prefetchExisting(db, pf.project.id, rows.map((r) => r.record.ticket_id));
         const dataAsOf = Date.parse(pf.stats.data_as_of!) / 1000;
         const toWrite: TransformedRow[] = [];
         for (const row of rows) {
-          const prev = existing.get(row.record.ticket_id);
-          if (!prev) {
-            toWrite.push(row);
-            counts.inserted++;
-          } else if (prev.project_id !== pf.project.id) {
+          const found = existing.get(row.record.ticket_id) ?? [];
+          const prev = found.find((e) => e.project_id === pf.project.id);
+          const other = found.find((e) => e.project_id !== pf.project.id);
+          if (other) {
             preErrors.push({
               rowNumber: row.record.source_row_number,
               line: 0,
               ticketId: row.record.ticket_id,
               code: "TICKET_ID_COLLISION",
-              message: `Ticket ${row.record.ticket_id} already exists in another project (${prev.project_id}); refusing to overwrite it from ${pf.project.code}.`,
+              message: `Ticket ${row.record.ticket_id} already exists in another project of this reporting cycle (${other.project_id}); refusing to import it into ${pf.project.code}.`,
               raw: rawFromRecord(row),
             });
+          } else if (!prev) {
+            toWrite.push(row);
+            counts.inserted++;
           } else if (prev.row_hash === row.record.row_hash) {
             counts.unchanged++;
           } else if (!forceUpdate && dataAsOf < prev.as_of_epoch) {

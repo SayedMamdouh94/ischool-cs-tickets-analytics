@@ -6,7 +6,6 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -25,12 +24,12 @@ import {
   changeRole,
   grantAccess,
   revokeAccess,
+  saveInsightRules,
   savePreferences,
-  saveProject,
   saveThresholds,
   type ActionResult,
 } from "@/lib/settings/actions";
-import type { AppUser, Settings } from "@/lib/analytics/types";
+import type { AppUser, InsightRule, Settings } from "@/lib/analytics/types";
 import { DATE_PRESET_LABELS } from "@/lib/filters/schema";
 import { fmtDateTime } from "@/lib/format";
 
@@ -111,37 +110,58 @@ export function PreferencesForm({ app, disabled }: { app: Settings["app"]; disab
   );
 }
 
-export function ProjectForm({ project, disabled }: { project: Settings["projects"][number]; disabled: boolean }) {
-  const [state, action, pending] = useActionState(saveProject, null);
+const UNIT_HINT: Record<InsightRule["unit"], string> = {
+  count: "tickets",
+  ratio: "%",
+  factor: "×",
+  days: "days",
+  score: "score",
+};
+
+/** Insight rule settings. Ratios are edited as percentages and stored as 0–1. */
+export function InsightRulesForm({ rules, disabled }: { rules: InsightRule[]; disabled: boolean }) {
+  const [state, action, pending] = useActionState(saveInsightRules, null);
   useToastResult(state);
+  const toDisplay = (r: InsightRule) => (r.unit === "ratio" ? +(r.value * 100).toFixed(2) : r.value);
   return (
-    <form action={action} className="grid items-end gap-3 rounded-lg border p-3 md:grid-cols-[1fr_1.4fr_1.2fr_5rem_auto_auto]">
-      <input type="hidden" name="code" value={project.code} />
-      <div className="text-sm">
-        <p className="font-medium">{project.code}</p>
-        <p className="text-xs text-muted-foreground">
-          {project.program} · {project.intake} · org {project.organization_id} · {project.tickets.toLocaleString("en-US")} tickets
-        </p>
+    <form
+      action={(fd) => {
+        // Convert percentages back to ratios before submitting.
+        for (const r of rules) {
+          const raw = fd.get(`ui:${r.key}`);
+          if (typeof raw === "string") fd.set(`rule:${r.key}`, r.unit === "ratio" ? String(Number(raw) / 100) : raw);
+          fd.set(`orig:${r.key}`, String(r.value));
+        }
+        action(fd);
+      }}
+      className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3"
+    >
+      {rules.map((r) => (
+        <div key={r.key} className="space-y-1.5">
+          <Label htmlFor={`rule-${r.key}`}>{r.label}</Label>
+          <div className="flex items-center gap-2">
+            <Input
+              id={`rule-${r.key}`}
+              name={`ui:${r.key}`}
+              type="number"
+              step="any"
+              min={r.unit === "ratio" ? r.min_value * 100 : r.min_value}
+              max={r.unit === "ratio" ? r.max_value * 100 : r.max_value}
+              defaultValue={toDisplay(r)}
+              disabled={disabled}
+              required
+              className="max-w-32"
+            />
+            <span className="text-xs text-muted-foreground">{UNIT_HINT[r.unit]}</span>
+          </div>
+          <p className="text-xs text-muted-foreground">{r.description}</p>
+        </div>
+      ))}
+      <div className="sm:col-span-2 xl:col-span-3">
+        <Button type="submit" disabled={disabled || pending}>
+          {pending && <Loader2 className="animate-spin" />} Save insight settings
+        </Button>
       </div>
-      <div className="space-y-1">
-        <Label htmlFor={`name-${project.code}`} className="text-xs">Display name</Label>
-        <Input id={`name-${project.code}`} name="name" defaultValue={project.name} maxLength={120} disabled={disabled} required />
-      </div>
-      <div className="space-y-1">
-        <Label htmlFor={`hint-${project.code}`} className="text-xs">Export filename contains</Label>
-        <Input id={`hint-${project.code}`} name="file_name_hint" defaultValue={project.file_name_hint} maxLength={120} disabled={disabled} required />
-      </div>
-      <div className="space-y-1">
-        <Label htmlFor={`order-${project.code}`} className="text-xs">Order</Label>
-        <Input id={`order-${project.code}`} name="display_order" type="number" min={0} max={999} defaultValue={project.display_order} disabled={disabled} />
-      </div>
-      <div className="flex items-center gap-2 pb-2">
-        <Switch id={`active-${project.code}`} name="is_active" defaultChecked={project.is_active} disabled={disabled} value="on" />
-        <Label htmlFor={`active-${project.code}`} className="text-xs">Active</Label>
-      </div>
-      <Button type="submit" variant="outline" size="sm" disabled={disabled || pending}>
-        {pending && <Loader2 className="animate-spin" />} Save
-      </Button>
     </form>
   );
 }

@@ -56,6 +56,10 @@ export const filtersSchema = z.object({
   to: isoDate.optional(),
   session: z.string().regex(/^\d{1,18}$/).optional(),
   lesson: z.string().trim().min(1).max(300).optional(),
+  /** Reporting cycle code; absent = the current cycle. Analytics never combine cycles. */
+  cycle: z.string().regex(/^[A-Z][A-Z0-9_]{1,39}$/).optional(),
+  /** Include archived projects of the selected cycle (explicit historical view). */
+  archived: z.boolean().default(false),
 });
 
 export type DashboardFilters = z.output<typeof filtersSchema>;
@@ -101,6 +105,9 @@ export function parseFilters(params: SearchParamsRecord | URLSearchParams): Dash
   if (session && /^\d{1,18}$/.test(session)) raw.session = session;
   const lesson = asSingle(get("lesson"));
   if (lesson && lesson.length <= 300) raw.lesson = lesson;
+  const cycle = asSingle(get("cycle"));
+  if (cycle && /^[A-Z][A-Z0-9_]{1,39}$/.test(cycle)) raw.cycle = cycle;
+  raw.archived = asSingle(get("archived")) === "1";
 
   const parsed = filtersSchema.safeParse(raw);
   return parsed.success ? parsed.data : filtersSchema.parse({});
@@ -109,7 +116,7 @@ export function parseFilters(params: SearchParamsRecord | URLSearchParams): Dash
 /** Serializes filters back to URL parameters (omitting defaults). */
 export function filtersToSearchParams(f: DashboardFilters, base?: URLSearchParams): URLSearchParams {
   const out = new URLSearchParams(base);
-  for (const param of [...Object.keys(LIST_FILTERS), "preset", "from", "to", "session", "lesson"]) {
+  for (const param of [...Object.keys(LIST_FILTERS), "preset", "from", "to", "session", "lesson", "cycle", "archived"]) {
     out.delete(param);
   }
   for (const [param, field] of Object.entries(LIST_FILTERS) as [ListParam, ListField][]) {
@@ -122,6 +129,8 @@ export function filtersToSearchParams(f: DashboardFilters, base?: URLSearchParam
   }
   if (f.session) out.set("session", f.session);
   if (f.lesson) out.set("lesson", f.lesson);
+  if (f.cycle) out.set("cycle", f.cycle);
+  if (f.archived) out.set("archived", "1");
   return out;
 }
 
@@ -193,7 +202,22 @@ export type RpcFilters = Partial<Record<ListField, string[]>> & {
   date_to?: string;
   session_ref?: string;
   lesson?: string;
+  cycle?: string;
+  include_archived?: boolean;
 };
+
+/** The scope part of the filters (also sent on its own to get_filter_options). */
+export interface RpcScope {
+  cycle?: string;
+  include_archived?: boolean;
+}
+
+export function toRpcScope(f: Pick<DashboardFilters, "cycle" | "archived">): RpcScope {
+  const out: RpcScope = {};
+  if (f.cycle) out.cycle = f.cycle;
+  if (f.archived) out.include_archived = true;
+  return out;
+}
 
 export function toRpcFilters(f: DashboardFilters, range: DateRange): RpcFilters {
   const out: RpcFilters = {};
@@ -204,7 +228,7 @@ export function toRpcFilters(f: DashboardFilters, range: DateRange): RpcFilters 
   if (range.to) out.date_to = range.to;
   if (f.session) out.session_ref = f.session;
   if (f.lesson) out.lesson = f.lesson;
-  return out;
+  return { ...out, ...toRpcScope(f) };
 }
 
 /** Builds a dashboard link that carries the current filters plus overrides. */

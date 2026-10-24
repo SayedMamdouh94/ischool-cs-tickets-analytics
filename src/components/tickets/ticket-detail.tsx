@@ -1,7 +1,8 @@
-import { ExternalLink, FileText, Lock, Paperclip } from "lucide-react";
+import Link from "next/link";
+import { Archive, ExternalLink, FileText, History, Lock, Paperclip } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
-import type { TicketDetail } from "@/lib/analytics/types";
+import type { AmbiguousTicket, TicketDetail } from "@/lib/analytics/types";
 import { RESPONSE_KIND_LABELS, fmtDateTime, fmtDuration, keyLabel, statusLabel } from "@/lib/format";
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
@@ -35,6 +36,11 @@ export function TicketDetailView({ ticket }: { ticket: TicketDetail }) {
     <div className="space-y-5">
       <div className="flex flex-wrap items-center gap-2">
         <Badge variant="outline">{ticket.project_name}</Badge>
+        {ticket.project_status === "archived" && (
+          <Badge variant="outline" className="gap-1 font-normal text-muted-foreground">
+            <Archive className="size-3" aria-hidden /> Archived project · {ticket.cycle_name}
+          </Badge>
+        )}
         <Badge variant="secondary">{statusLabel(ticket.status)}</Badge>
         {ticket.category && <Badge variant="outline" className="font-normal">{ticket.category}</Badge>}
         {ticket.subcategory && (
@@ -125,10 +131,77 @@ export function TicketDetailView({ ticket }: { ticket: TicketDetail }) {
         </div>
       )}
 
+      {ticket.changes.length > 0 && (
+        <section className="space-y-2">
+          <h3 className="flex items-center gap-1.5 text-xs font-semibold">
+            <History className="size-3.5" aria-hidden /> Changes from later exports
+          </h3>
+          <ol className="space-y-2">
+            {ticket.changes.map((c) => (
+              <li key={c.changed_at} className="rounded-md border p-2.5 text-xs">
+                <p className="text-muted-foreground">
+                  {fmtDateTime(c.changed_at)}
+                  {c.source_filename ? ` · ${c.source_filename}` : ""}
+                </p>
+                {c.values ? (
+                  <dl className="mt-1.5 grid gap-1">
+                    {Object.entries(c.values).map(([field, v]) => (
+                      <div key={field} className="grid grid-cols-[9rem_1fr] gap-2">
+                        <dt className="font-medium">{field}</dt>
+                        <dd dir="auto" className="user-text min-w-0 break-words">
+                          <span className="text-muted-foreground line-through">{formatChange(v.old)}</span> → {formatChange(v.new)}
+                        </dd>
+                      </div>
+                    ))}
+                  </dl>
+                ) : (
+                  <p className="mt-1">Changed: {c.fields.join(", ")}</p>
+                )}
+              </li>
+            ))}
+          </ol>
+        </section>
+      )}
+
       <p className="text-[11px] text-muted-foreground">
         Source: {ticket.source_filename}, row {ticket.source_row_number} · imported {fmtDateTime(ticket.imported_at)} · classification{" "}
         {ticket.classification ? `${ticket.classification.method} ${ticket.classification.version}` : "none"}
       </p>
+    </div>
+  );
+}
+
+function formatChange(value: unknown): string {
+  if (value === null || value === undefined || value === "") return "(empty)";
+  const s = String(value);
+  if (/^\d{4}-\d{2}-\d{2}T/.test(s)) return fmtDateTime(s);
+  return s.length > 300 ? `${s.slice(0, 300)}…` : s;
+}
+
+/** Shown when a ticket number exists in several projects (e.g. an archived cycle and its replacement). */
+export function AmbiguousTicketChoice({ ticket, asPage = false }: { ticket: AmbiguousTicket; asPage?: boolean }) {
+  return (
+    <div className="space-y-3 text-sm">
+      <p className="text-muted-foreground">Ticket #{ticket.ticket_id} exists in more than one project. Choose which record to open:</p>
+      <ul className="divide-y rounded-lg border">
+        {ticket.candidates.map((c) => (
+          <li key={c.project_code} className="flex items-center justify-between gap-3 p-3">
+            <div>
+              <p className="font-medium">{c.project_name}</p>
+              <p className="text-xs text-muted-foreground">
+                {c.cycle_name}
+                {c.project_status === "archived" ? " · archived" : ""}
+              </p>
+            </div>
+            <Link
+              href={asPage ? `/tickets/${ticket.ticket_id}?project=${c.project_code}` : `/tickets/${ticket.ticket_id}?project=${c.project_code}`}
+              className="text-xs font-medium text-primary hover:underline"
+            >
+              Open
+            </Link>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }

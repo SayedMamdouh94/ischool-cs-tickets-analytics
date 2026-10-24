@@ -114,9 +114,9 @@ export function TicketTable({ result }: { result: TicketSearchResult }) {
               </TableRow>
             )}
             {result.rows.map((r) => (
-              <TableRow key={r.ticket_id} className="cursor-pointer" onClick={() => setParam({ ticket: String(r.ticket_id) })}>
+              <TableRow key={`${r.project_code}-${r.ticket_id}`} className="cursor-pointer" onClick={() => setParam({ ticket: String(r.ticket_id), tproject: r.project_code })}>
                 <TableCell>
-                  <button type="button" className="tabular font-medium hover:underline" onClick={(e) => { e.stopPropagation(); setParam({ ticket: String(r.ticket_id) }); }}>
+                  <button type="button" className="tabular font-medium hover:underline" onClick={(e) => { e.stopPropagation(); setParam({ ticket: String(r.ticket_id), tproject: r.project_code }); }}>
                     #{r.ticket_id}
                   </button>
                 </TableCell>

@@ -7,12 +7,13 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import { useFilterTransition } from "@/components/filters/filter-transition";
 
 /** Detail drawer driven by the `ticket` URL parameter (shareable, back-button friendly). */
-export function TicketDrawer({ ticketId, children }: { ticketId: number; children: React.ReactNode }) {
+export function TicketDrawer({ ticketId, projectCode, children }: { ticketId: number; projectCode?: string | null; children: React.ReactNode }) {
   const params = useSearchParams();
   const { navigate } = useFilterTransition();
   const close = () => {
     const next = new URLSearchParams(params.toString());
     next.delete("ticket");
+    next.delete("tproject");
     navigate(next);
   };
   return (
@@ -21,7 +22,7 @@ export function TicketDrawer({ ticketId, children }: { ticketId: number; childre
         <SheetHeader>
           <SheetTitle className="flex items-center gap-2">
             Ticket #{ticketId}
-            <Link href={`/tickets/${ticketId}`} className="text-muted-foreground hover:text-foreground" aria-label="Open as page" title="Open as page">
+            <Link href={`/tickets/${ticketId}${projectCode ? `?project=${encodeURIComponent(projectCode)}` : ""}`} className="text-muted-foreground hover:text-foreground" aria-label="Open as page" title="Open as page">
               <Maximize2 className="size-3.5" />
             </Link>
           </SheetTitle>

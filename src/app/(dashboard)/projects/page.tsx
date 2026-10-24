@@ -32,7 +32,7 @@ export default function ProjectsPage({ searchParams }: PageProps<"/projects">) {
   return (
     <DashboardPage
       title="Projects Comparison"
-      description="The four projects side by side, or grouped by program (DECI vs DEMI) and intake group (regular vs summer)."
+      description="Projects of the selected reporting cycle side by side, or grouped by program and intake group."
       searchParams={searchParams}
       actions={<PageActions aggregate={[{ dataset: "projects", label: "Project metrics" }, { dataset: "programs", label: "Program metrics" }]} />}
     >
@@ -42,7 +42,7 @@ export default function ProjectsPage({ searchParams }: PageProps<"/projects">) {
 }
 
 function colorFor(by: CompareBy, key: string, i: number): string {
-  if (by === "project") return projectColor(key, i);
+  if (by === "project") return projectColor(key);
   if (by === "program") return PROGRAM_COLORS[key] ?? SERIES_COLORS[i % 8];
   return INTAKE_GROUP_COLORS[key] ?? SERIES_COLORS[i % 8];
 }

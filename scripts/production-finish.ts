@@ -8,7 +8,7 @@
  *   2. auth        site URL, redirect allow-list, invite-only sign-up (only pushed if different)
  *   3. preflight   schema present and migrations up to date (read-only)
  *   4. import      CSVs in data/raw; files already imported cleanly are skipped
- *   5. validate    70 reconciliation checks against the original files
+ *   5. validate    reconciliation checks against the original files (72)
  *   6. health      security and health checks
  *   7. admin       ADMIN_EMAIL gets the admin role (invited if new); skipped if unset
  *   8. permissions RLS / role smoke test with temporary accounts
@@ -62,7 +62,7 @@ async function main(): Promise<number> {
     (await step("4. import", async () => ({ ok: (await run("import.ts", ["--skip-known-files"])) === 0 })));
 
   if (foundation) {
-    await step("5. validate (70 checks)", async () => ({ ok: (await run("validate.ts")) === 0 }));
+    await step("5. validate (reconciliation)", async () => ({ ok: (await run("validate.ts")) === 0 }));
     await step("6. health checks", async () => ({ ok: (await run("check.ts")) === 0 }));
     await step("7. administrator", async () =>
       adminEmail

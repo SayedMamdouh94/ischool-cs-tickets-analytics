@@ -2,7 +2,7 @@ import { type NextRequest } from "next/server";
 import { checkViewer } from "@/lib/auth/dal";
 import { createClient } from "@/lib/supabase/server";
 import { getFilterOptions, getSettings } from "@/lib/analytics/queries";
-import { parseFilters, resolveDateRange, toRpcFilters } from "@/lib/filters/schema";
+import { parseFilters, resolveDateRange, toRpcFilters, toRpcScope } from "@/lib/filters/schema";
 import { csvEscape } from "@/lib/table-data";
 import { callRpc } from "@/lib/supabase/rpc";
 
@@ -46,14 +46,14 @@ export async function GET(request: NextRequest) {
   const params = request.nextUrl.searchParams;
   const includeText = params.get("include_text") === "1";
   const filters = parseFilters(params);
-  const [options, settings] = await Promise.all([getFilterOptions(), getSettings()]);
+  const [options, settings] = await Promise.all([getFilterOptions(toRpcScope(filters)), getSettings()]);
   const range = resolveDateRange(filters, { datasetMax: options.date_range.max, anchor: settings.app.date_preset_anchor === "today" ? "today" : "dataset_end" });
   const rpcFilters = toRpcFilters(filters, range);
   const supabase = await createClient();
   const call = (fn: string, args: Record<string, unknown>) => callRpc<unknown>(supabase, fn, args);
 
   // Fail fast (and with a proper status) if the first page is refused.
-  const first = await call("export_tickets_page", { p_filters: rpcFilters, p_after_ticket_id: 0, p_limit: 1000, p_include_text: includeText });
+  const first = await call("export_tickets_page", { p_filters: rpcFilters, p_after_pk: 0, p_limit: 1000, p_include_text: includeText });
   if (first.error) return Response.json({ error: first.error.message }, { status: 403 });
 
   const columns = includeText ? [...COLUMNS, ...TEXT_COLUMNS] : [...COLUMNS];
@@ -70,8 +70,9 @@ export async function GET(request: NextRequest) {
           controller.enqueue(encoder.encode(`${lines}\r\n`));
           total += page.length;
           if (page.length < 1000) break;
-          const after = Number(page[page.length - 1].ticket_id);
-          const next = await call("export_tickets_page", { p_filters: rpcFilters, p_after_ticket_id: after, p_limit: 1000, p_include_text: includeText });
+          // Keyset on the internal key: source ticket IDs may repeat across projects.
+          const after = Number(page[page.length - 1]._pk);
+          const next = await call("export_tickets_page", { p_filters: rpcFilters, p_after_pk: after, p_limit: 1000, p_include_text: includeText });
           if (next.error) throw new Error(next.error.message);
           page = (next.data as Record<string, unknown>[]) ?? [];
         }

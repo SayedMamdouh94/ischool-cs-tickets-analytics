@@ -1,10 +1,12 @@
 # CS Tickets Analytics
 
-Customer-support ticket analytics for four educational projects — **DECI 4th Intake**, **DECI Summer Intake**, **DEMI 3rd Intake** and **DEMI Summer Intake** — built from historical ticket exports.
+Customer-support ticket analytics for educational projects (initially **DECI 4th Intake**, **DECI Summer Intake**, **DEMI 3rd Intake** and **DEMI Summer Intake**), built from ticket exports. Administrators manage projects and reporting cycles and import new exports entirely in the dashboard.
 
 - **Next.js 16** (App Router, Cache Components, TypeScript strict) · Tailwind CSS v4 · shadcn/ui · Recharts
 - **Supabase** PostgreSQL + Auth, Row Level Security, all analytics computed in SQL functions
-- Admin **CLI importer** (idempotent, validated, fully reconciled against the source files)
+- **Web imports** (Settings & Imports): downloadable Excel/CSV template, direct upload to private storage, background validation with a preview and downloadable validation report, explicit confirmation, idempotent batched import with field history, durable jobs driven by pg_cron
+- **Projects & reporting cycles**: create/edit/archive/restore projects and cycles, "archive & start new", historical views; analytics never combine cycles
+- Admin **CLI importer** for bulk re-imports (same validation; fully reconciled against the source files)
 - Deploys to **Vercel**
 
 > This is an analytics system over imported exports, **not** a live ticketing system. Statuses reflect each export snapshot; the dashboard shows the snapshot date everywhere.
@@ -13,7 +15,8 @@ Customer-support ticket analytics for four educational projects — **DECI 4th I
 
 | Area | Where |
 | --- | --- |
-| 10 dashboard pages (overview, projects, trends, topics, team, backlog, explorer, data quality, insights, settings) + printable management summary | `src/app/(dashboard)/` |
+| 10 dashboard pages (overview, projects, trends, topics, team, backlog, explorer, data quality, insights, settings & imports) + import job page + printable management summary | `src/app/(dashboard)/` |
+| Web import pipeline (template, CSV/XLSX reading, validation, worker, actions) | `src/lib/imports/`, `src/app/api/imports/` |
 | Database schema, RLS, analytics functions, reference data | `supabase/migrations/` |
 | CSV parsing, validation, transformation, classification (pure, tested) | `src/lib/ingest/`, `src/lib/classification/`, `src/lib/validation/` |
 | Import / validate / check / grant CLIs | `scripts/` |
@@ -64,6 +67,7 @@ NEXT_PUBLIC_SITE_URL=http://localhost:3000
 | `npm run db:types` | Regenerate `src/types/database.ts` from the local schema |
 | `npm run db:preflight` | Read-only inventory of a target database before migrating |
 | `npm run auth:config [-- --apply]` | Check/apply production Auth settings (site URL, redirects, invite-only) |
+| `npm run worker:configure [-- --vercel] [--verify] [--rotate]` | Store the import-worker URL/secret in Supabase Vault (and Vercel) for the background watchdog |
 | `npm run db:smoke` | RLS / role smoke test with temporary accounts (removed afterwards) |
 | `npm run web:smoke` | Authenticated HTTP smoke test of every page of the deployed app |
 | `npm run production:finish` | All of the above in order, idempotently, against `.env.cloud` (see docs/DEPLOYMENT.md) |
@@ -73,8 +77,9 @@ Without `DATABASE_URL`, the database scripts use a **passwordless** transport: `
 ## Access model
 
 - Public sign-up is disabled; there is no public page with data.
-- Users need an **application role** (`user_roles`) to see anything: **admin** (everything, including message text, exports, settings, access) or **analyst** (aggregates and ticket metadata; no message text, notes, attachments or ticket-level exports). Enforced in PostgreSQL, not only in the UI.
-- Viewing ticket content, exports and settings changes are written to an audit log.
+- Users need an **application role** (`user_roles`) to see anything: **admin** (everything, including message text, exports, settings, access, imports, projects, cycles and mappings) or **analyst** (aggregates and ticket metadata, read-only settings and import history; no message text, notes, attachments, uploads or ticket-level exports). Enforced in PostgreSQL, not only in the UI.
+- Uploaded files are in a private bucket; staged rows are unreachable by any client role; worker functions are service-role only.
+- Viewing ticket content, exports, imports, project/cycle lifecycle changes, mappings and settings changes are written to an audit log.
 
 ## Documentation
 

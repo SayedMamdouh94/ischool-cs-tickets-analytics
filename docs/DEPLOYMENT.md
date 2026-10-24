@@ -35,7 +35,7 @@ supabase projects api-keys --project-ref <ref> --reveal -o json   # pipe into th
 | 2. auth settings | `site_url`, redirect allow-list (existing entries kept), `disable_signup = true` via `supabase config diff/push` with a temporary config that declares only these keys | pushes only when different |
 | 3. preflight | Read-only inventory: tables, rows, migration history | read-only |
 | 4. import | `db:import --skip-known-files` | files already imported cleanly are skipped |
-| 5. validate | 70 reconciliation checks against the original CSVs, incl. stored-text and timestamp fidelity | read-only |
+| 5. validate | 72 reconciliation checks against the original CSVs, incl. stored-text and timestamp fidelity | read-only |
 | 6. health | RLS, grants, anon lockdown, demo-account check | read-only |
 | 7. administrator | `ADMIN_EMAIL` gets the admin role (invited first if the account doesn't exist) | no change if already admin |
 | 8. permissions | Temporary admin / analyst / no-role accounts exercise RLS and role checks, then are removed | leaves no accounts |
@@ -57,6 +57,36 @@ Without `DATABASE_URL`, every CLI script (`db:import`, `db:validate`, `db:check`
 - Password recovery started from the login page uses Supabase's default email template with the PKCE flow and lands on `/auth/confirm?code=…`.
 - Invitations (`admin:grant --invite`, Settings → Access) land on `/auth/callback`, which removes the tokens from the address bar and exchanges them server-side (`/auth/session`, same-origin only) for the session cookie.
 - Custom templates pointing at `/auth/confirm?token_hash=…&type=…` are also supported.
+
+### Web imports: background worker configuration
+
+Imports run without any extra infrastructure: Storage, pg_cron and pg_net are part of the Supabase project and are enabled by migration `20261024090200`. Two settings connect them to the web app:
+
+| Setting | Where | Purpose |
+| --- | --- | --- |
+| `SUPABASE_SECRET_KEY` | Vercel (Production, sensitive) | signed upload URLs and the service-role worker |
+| `IMPORT_WORKER_SECRET` | Vercel (Production, sensitive) + Supabase Vault (`import_worker_secret`) | bearer secret for `POST /api/imports/worker`, used by the pg_cron watchdog and by the worker to continue long files |
+| `import_worker_url` | Supabase Vault | `https://<site>/api/imports/worker` |
+
+```bash
+ENV_FILE=.env.cloud npm run worker:configure -- --vercel      # generate/store the secret in Vault and Vercel (never printed)
+# redeploy so the app picks up IMPORT_WORKER_SECRET, then:
+ENV_FILE=.env.cloud npm run worker:configure -- --verify      # endpoint accepts the secret (202) and rejects others (401)
+```
+
+Without the secret, imports still work while the job page is open (it restarts the worker) and confirmed imports are always completed by pg_cron; only validation of a file uploaded and then left with the browser closed waits until someone opens the job page. `npm run db:check` reports whether the watchdog is configured.
+
+### Upgrading an existing deployment (October 2026 release)
+
+The upgrade adds migrations `20261024090000`–`20261024090200` (reporting cycles, project lifecycle, internal ticket key, import jobs, scoped analytics). They were rehearsed on a copy of the production data: applied in ~3 s, every analytics output unchanged except the intentionally corrected period comparison. Order:
+
+1. Backup: `supabase db dump --linked -f backups/<date>-schema.sql` and `supabase db dump --linked --data-only -f backups/<date>-data.sql` (verify by restoring into a scratch database). Keep backups out of Git (`/data/backups/` is ignored).
+2. `supabase db push --linked --dry-run`, then `supabase db push --linked` (applies the three migrations in one go).
+3. Deploy the application (push to `main`); the previous build keeps working on read-only pages until then.
+4. `npm run worker:configure -- --vercel`, redeploy, `npm run worker:configure -- --verify`.
+5. `ENV_FILE=.env.cloud npm run production:finish` (validate, health, permission and live smoke tests).
+
+Rollback: restore the data dump into a fresh project/branch, or revert the application commit (the old app needs the old schema, so restore the backup before deploying the old build).
 
 ## 2. Manual equivalents (reference)
 
@@ -96,7 +126,8 @@ Or in the Vercel dashboard: **Add New → Project → Import** the GitHub reposi
 | `NEXT_PUBLIC_SUPABASE_URL` | Production, Preview | `https://rpofhzcqcxpuotsebzsq.supabase.co` |
 | `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | Production, Preview | Publishable key (`sb_publishable_…`) from Project Settings → API Keys |
 | `NEXT_PUBLIC_SITE_URL` | Production | `https://<your-app>.vercel.app` |
-| `SUPABASE_SECRET_KEY` | Production only, mark **Sensitive** | Secret key (`sb_secret_…`). Optional — only needed to send invitations from Settings → Access |
+| `SUPABASE_SECRET_KEY` | Production only, mark **Sensitive** | Secret key (`sb_secret_…`). Required for web imports (signed upload URLs, background worker) and invitations from Settings → Access |
+| `IMPORT_WORKER_SECRET` | Production only, mark **Sensitive** | Set by `npm run worker:configure -- --vercel` (see above) |
 
 Do **not** add `DATABASE_URL` to Vercel; the web app never connects with privileged credentials.
 
@@ -132,7 +163,7 @@ Pushing to the default branch also deploys automatically once the repository is 
 
 ## Operations
 
-- **New exports:** see [DATA_IMPORT.md](DATA_IMPORT.md); run `db:import` then `db:validate`.
+- **New exports, new projects, archiving:** in the dashboard (Settings & Imports) — see [DATA_IMPORT.md](DATA_IMPORT.md). The CLI `db:import` remains for bulk re-imports.
 - **Schema changes:** add a new migration file (`supabase migration new <name>`), test locally with `supabase db reset` + `npm run test:integration`, then `supabase db push`.
 - **Thresholds and preferences:** Settings (admin).
 - **Access reviews:** Settings → Access and Audit log.

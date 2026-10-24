@@ -1,5 +1,7 @@
 /** Shapes returned by the analytics SQL functions (supabase/migrations/*_analytics.sql). */
 
+export type LifecycleStatus = "draft" | "active" | "archived";
+
 export interface ProjectOption {
   code: string;
   name: string;
@@ -7,7 +9,38 @@ export interface ProjectOption {
   intake: string;
   intake_group: string;
   organization_id: number;
+  status: LifecycleStatus;
   is_active: boolean;
+}
+
+/** The analytical scope a page is computed for: one reporting cycle, archived projects only on request. */
+export interface ResolvedScope {
+  cycle: string;
+  cycle_name: string;
+  cycle_status: LifecycleStatus;
+  is_current: boolean;
+  include_archived: boolean;
+  requested_cycle: string | null;
+}
+
+export interface ProjectCoverage {
+  project: string;
+  name: string;
+  status: LifecycleStatus;
+  tickets: number;
+  first_date: string | null;
+  last_date: string | null;
+  snapshot_at: string | null;
+  last_complete_date: string | null;
+}
+
+export interface ScopeCycle {
+  code: string;
+  name: string;
+  status: LifecycleStatus;
+  is_current: boolean;
+  archived_at: string | null;
+  projects: { code: string; name: string; status: LifecycleStatus; tickets: number; snapshot_at: string | null }[];
 }
 
 export interface ValueCount {
@@ -23,16 +56,24 @@ export interface CategoryOption {
 }
 
 export interface FilterOptions {
+  /** null when no reporting cycle is current (or the requested one does not exist). */
+  scope: ResolvedScope | null;
   projects: ProjectOption[];
   programs: string[];
   intakes: string[];
-  statuses: ValueCount[];
+  statuses: (ValueCount & { class: "open" | "closed" | "unclassified"; label: string | null })[];
   topics: ValueCount[];
   responders: ValueCount[];
   resolvers: ValueCount[];
   categories: CategoryOption[];
   date_range: { min: string | null; max: string | null; min_at: string | null; max_at: string | null };
-  latest_import: { completed_at: string | null; data_as_of: string | null };
+  latest_import: { completed_at: string | null; data_as_of: string | null; earliest_data_as_of: string | null };
+  coverage: ProjectCoverage[];
+  active_imports: { project: string; status: string; rows_applied: number; rows_to_apply: number | null; started_at: string | null }[];
+  partial_imports: { project: string; rows_applied: number; rows_to_apply: number | null }[];
+  latest_rejections: { project: string; rejected: number; source_filename: string }[];
+  unmapped_topics: number;
+  unclassified_status_tickets: number;
   total_tickets: number;
 }
 
@@ -61,6 +102,8 @@ export interface GroupMetrics {
   rejected: number;
   missing_status: number;
   other_status: number;
+  closed_status: number;
+  unclassified_status: number;
   open_tickets: number;
   with_response_ts: number;
   with_resolution_ts: number;
@@ -138,13 +181,35 @@ export interface Backlog {
   }[];
   open_by_topic: { topic: string; count: number }[];
   snapshots: { project: string; snapshot_at: string | null }[];
+  status_classes: { status: string; class: "open" | "closed" | "unclassified"; count: number }[];
   reconstructed: { date: string; open: number; created: number; resolved: number }[];
 }
 
+export type PeriodExclusion = "ok" | "no_data" | "insufficient_history" | "export_ends_before_period";
+
 export interface PeriodComparison {
   dimension: string;
+  /** aligned: each project uses its own latest window; calendar: one explicit window for all. */
+  mode: "aligned" | "calendar";
+  days: number;
+  /** Overall span of the compared windows. */
   current: { from: string; to: string; days: number } | null;
   previous: { from: string; to: string; days: number } | null;
+  totals: { current: number; previous: number };
+  projects: {
+    project: string;
+    name: string;
+    included: boolean;
+    reason: PeriodExclusion;
+    first_date: string | null;
+    last_complete_date: string | null;
+    current_from: string | null;
+    current_to: string | null;
+    previous_from: string | null;
+    previous_to: string | null;
+    current: number;
+    previous: number;
+  }[];
   rows: { key: string; label: string | null; current: number; previous: number }[];
 }
 
@@ -172,6 +237,7 @@ export interface TicketRow {
   ticket_id: number;
   project_code: string;
   project_name: string;
+  project_status?: LifecycleStatus;
   topic: string;
   status: string | null;
   owner_id: string | null;
@@ -198,7 +264,27 @@ export interface TicketSearchResult {
   rows: TicketRow[];
 }
 
+export interface TicketCandidate {
+  project_code: string;
+  project_name: string;
+  project_status: LifecycleStatus;
+  cycle: string;
+  cycle_name: string;
+}
+
+export interface AmbiguousTicket {
+  ambiguous: true;
+  ticket_id: number;
+  candidates: TicketCandidate[];
+}
+
 export interface TicketDetail extends Omit<TicketRow, "category" | "subcategory"> {
+  ambiguous?: undefined;
+  cycle: string;
+  cycle_name: string;
+  status_class: "open" | "closed" | "unclassified";
+  source_data_as_of: string;
+  changes: { changed_at: string; fields: string[]; values: Record<string, { old: unknown; new: unknown }> | null; source_filename: string | null }[];
   organization_id: number;
   priority: string | null;
   department: string | null;
@@ -235,15 +321,31 @@ export interface DataQuality {
   };
   response_kinds: Record<string, number>;
   import_errors: { error_code: string; count: number }[];
+  /** Source IDs that occur in more than one project of the scope. */
   duplicate_ticket_ids_in_db: number;
   coverage: {
     project: string;
     name: string;
+    status: LifecycleStatus;
     tickets: number;
     first_date: string | null;
     last_date: string | null;
     active_days: number;
     snapshot_at: string | null;
+    last_complete_date: string | null;
+  }[];
+  unmapped_topics: { topic: string; tickets: number }[];
+  unclassified_statuses: { status: string | null; tickets: number }[];
+  import_jobs: {
+    id: string;
+    project: string;
+    status: string;
+    original_filename: string;
+    rows_applied: number;
+    rows_to_apply: number | null;
+    rows_invalid: number | null;
+    error_code: string | null;
+    updated_at: string;
   }[];
   reconciliation: {
     import_run_id: string;
@@ -252,6 +354,7 @@ export interface DataQuality {
     file_hash: string;
     completed_at: string;
     status: string;
+    source: "cli" | "web";
     records_in_file: number;
     inserted_count: number;
     updated_count: number;
@@ -274,6 +377,10 @@ export interface ImportRun {
   source_filename: string;
   project: string | null;
   project_name: string | null;
+  project_status: LifecycleStatus | null;
+  source: "cli" | "web";
+  invalid_row_policy: string | null;
+  job_id: string | null;
   file_hash: string;
   file_size_bytes: number | null;
   started_at: string;
@@ -309,10 +416,106 @@ export interface ImportRunDetail {
   raw_rows_visible: boolean;
 }
 
+export interface InsightRule {
+  key: string;
+  value: number;
+  min_value: number;
+  max_value: number;
+  unit: "count" | "ratio" | "factor" | "days" | "score";
+  label: string;
+  description: string;
+  updated_at: string;
+}
+
+export interface ReportingCycle {
+  id: string;
+  code: string;
+  name: string;
+  description: string | null;
+  status: LifecycleStatus;
+  is_current: boolean;
+  archived_at: string | null;
+  archive_reason: string | null;
+  created_at: string;
+  projects: number;
+}
+
+export interface SettingsProject extends ProjectOption {
+  id: string;
+  description: string | null;
+  file_name_hint: string;
+  display_order: number;
+  cycle: string;
+  cycle_name: string;
+  cycle_status: LifecycleStatus;
+  archived_at: string | null;
+  archive_reason: string | null;
+  archived_via: "project" | "cycle" | null;
+  created_at: string;
+  tickets: number;
+  last_import: { completed_at: string; data_as_of: string | null; source_filename: string; status: string; source: "cli" | "web" } | null;
+  snapshot_at: string | null;
+  imports: number;
+  active_job: { id: string; status: string } | null;
+}
+
 export interface Settings {
   thresholds: { key: "response_hours" | "resolution_hours"; value_hours: number; label: string; description: string; updated_at: string }[];
   app: { organization_name?: string; date_preset_anchor?: "dataset_end" | "today"; default_date_preset?: string };
-  projects: (ProjectOption & { id: string; file_name_hint: string; display_order: number; tickets: number })[];
+  insight_rules: InsightRule[];
+  cycles: ReportingCycle[];
+  projects: SettingsProject[];
+}
+
+export interface StatusValue {
+  status: string;
+  tickets: number;
+  class: "open" | "closed" | null;
+  label: string | null;
+  configured: boolean;
+  updated_at: string | null;
+}
+
+export interface TopicMappings {
+  topics: {
+    topic: string;
+    tickets: number;
+    current_cycle_tickets: number;
+    projects: string[];
+    first_seen: string | null;
+    category: string | null;
+    category_name: string | null;
+    mapped: boolean;
+    source: "seed" | "admin" | null;
+    updated_at: string | null;
+  }[];
+  categories: {
+    code: string;
+    name: string;
+    name_ar: string | null;
+    description: string | null;
+    kind: "category" | "subcategory";
+    is_active: boolean;
+    sort_order: number;
+    topics: number;
+  }[];
+}
+
+export interface ProjectHistoryEntry {
+  id: string;
+  source_filename: string;
+  source: "cli" | "web";
+  status: string;
+  started_at: string;
+  completed_at: string | null;
+  data_as_of: string | null;
+  records_in_file: number | null;
+  inserted_count: number;
+  updated_count: number;
+  skipped_unchanged_count: number;
+  skipped_stale_count: number;
+  rejected_count: number;
+  job_id: string | null;
 }
 
 export interface AppUser {

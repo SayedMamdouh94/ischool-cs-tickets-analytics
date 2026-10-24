@@ -41,15 +41,24 @@ async function get(site: string, path: string, cookie?: string): Promise<{ statu
   return { status: res.status, text, location: res.headers.get("location"), headers: res.headers };
 }
 
+/** Expected figures for the dashboard's default scope: active projects of the current reporting cycle. */
 async function expected(db: Db) {
-  const [row] = await db.query<{ total: number; sept: number; deci_summer: number; demi3: number; sample: number }>(
-    `select (select count(*)::int from public.tickets) as total,
-            (select count(*)::int from public.tickets where created_date between '2026-09-01' and '2026-09-30') as sept,
-            (select count(*)::int from public.tickets t join public.projects p on p.id = t.project_id where p.code = 'DECI_SUMMER') as deci_summer,
-            (select count(*)::int from public.tickets t join public.projects p on p.id = t.project_id where p.code = 'DEMI_3RD') as demi3,
-            (select ticket_id::bigint from public.tickets where message is not null order by ticket_id limit 1) as sample`,
+  const [row] = await db.query<{ total: number; sept: number; deci_summer: number; demi3: number; sample: number; cycle: string }>(
+    `with s as (
+       select t.* from public.tickets t
+       join public.projects p on p.id = t.project_id and p.status = 'active'
+       join public.reporting_cycles rc on rc.id = p.cycle_id and rc.is_current
+     )
+     select (select count(*)::int from s) as total,
+            (select count(*)::int from s where created_date between '2026-09-01' and '2026-09-30') as sept,
+            (select count(*)::int from s join public.projects p on p.id = s.project_id where p.code = 'DECI_SUMMER') as deci_summer,
+            (select count(*)::int from s join public.projects p on p.id = s.project_id where p.code = 'DEMI_3RD') as demi3,
+            (select s.ticket_id::bigint from s where s.message is not null
+               and (select count(*) from public.tickets t2 where t2.ticket_id = s.ticket_id) = 1
+             order by s.ticket_id limit 1) as sample,
+            (select name from public.reporting_cycles where is_current) as cycle`,
   );
-  return { total: Number(row.total), sept: Number(row.sept), deciSummer: Number(row.deci_summer), demi3: Number(row.demi3), sample: Number(row.sample) };
+  return { total: Number(row.total), sept: Number(row.sept), deciSummer: Number(row.deci_summer), demi3: Number(row.demi3), sample: Number(row.sample), cycle: row.cycle };
 }
 
 async function main(): Promise<number> {
@@ -93,7 +102,7 @@ async function main(): Promise<number> {
     const [adminCookie, analystCookie, noneCookie] = await Promise.all(users.map((u) => sessionCookie(url, key, u)));
 
     const pages: [string, string[]][] = [
-      ["/overview", ["Executive Overview", fmt(exp.total)]],
+      ["/overview", ["Executive Overview", fmt(exp.total), exp.cycle]],
       ["/projects", ["Projects Comparison", "DEMI — 3rd Intake"]],
       ["/projects/DEMI_3RD", ["DEMI — 3rd Intake", fmt(exp.demi3)]],
       ["/trends", ["Ticket Trends", "When tickets are created"]],
@@ -102,8 +111,11 @@ async function main(): Promise<number> {
       ["/backlog", ["Backlog &amp; Resolution", "Longest outstanding tickets"]],
       ["/tickets", ["Ticket Explorer", `of ${fmt(exp.total)} tickets`]],
       ["/data-quality", ["Data Quality", "File-level reconciliation"]],
-      ["/insights", ["Insights &amp; Recommendations", "Method"]],
-      ["/settings", ["Settings &amp; Imports", "Analytics thresholds"]],
+      ["/insights", ["Insights &amp; Recommendations", "Method", "Data caveat"]],
+      ["/settings", ["Settings &amp; Imports", "Current reporting cycle", "Create project"]],
+      ["/settings?tab=imports", ["Import template", "New import", "Import history"]],
+      ["/settings?tab=categories", ["category mapping", "Status values"]],
+      ["/settings?tab=thresholds", ["Analytics thresholds", "Insights &amp; Recommendations rules"]],
       ["/reports/summary", ["Management Summary", "Headline figures"]],
     ];
     for (const [path, markers] of pages) {
@@ -127,7 +139,26 @@ async function main(): Promise<number> {
     const detailAnalyst = await get(site, `/tickets/${exp.sample}`, analystCookie);
     check("analyst: ticket detail hides content", detailAnalyst.status === 200 && detailAnalyst.text.includes("Message content hidden") && !detailAnalyst.text.includes(">Student message<"), String(detailAnalyst.status));
     const analystSettings = await get(site, "/settings", analystCookie);
-    check("analyst: settings are read-only", analystSettings.text.includes("settings are read-only"));
+    check("analyst: settings are read-only", analystSettings.text.includes("settings are read-only") && !analystSettings.text.includes("Create project"));
+    const analystImports = await get(site, "/settings?tab=imports", analystCookie);
+    check("analyst: no upload controls", analystImports.status === 200 && !analystImports.text.includes("Upload &amp; validate"), String(analystImports.status));
+
+    // Import templates and job endpoints
+    const xlsx = await fetch(`${site}/api/imports/template?format=xlsx&project=DECI_4TH`, { headers: { cookie: adminCookie } });
+    const xlsxBytes = xlsx.status === 200 ? Buffer.from(await xlsx.arrayBuffer()) : Buffer.alloc(0);
+    check("admin: Excel template download", xlsx.status === 200 && xlsxBytes.subarray(0, 2).toString() === "PK" && (xlsx.headers.get("content-type") ?? "").includes("spreadsheetml"), `${xlsx.status}, ${xlsxBytes.length} bytes`);
+    const csvTpl = await fetch(`${site}/api/imports/template?format=csv`, { headers: { cookie: adminCookie } });
+    const csvTplText = csvTpl.status === 200 ? await csvTpl.text() : "";
+    check("admin: CSV template download", csvTpl.status === 200 && csvTplText.replace(/^\uFEFF/, "").startsWith("Ticket_ID,Topic,Message"), String(csvTpl.status));
+    const analystTpl = await fetch(`${site}/api/imports/template?format=xlsx`, { headers: { cookie: analystCookie } });
+    check("analyst: template download blocked (403)", analystTpl.status === 403, String(analystTpl.status));
+    const fakeJob = "00000000-0000-4000-8000-000000000000";
+    const analystJob = await fetch(`${site}/api/imports/jobs/${fakeJob}`, { headers: { cookie: analystCookie } });
+    check("analyst: import job API blocked (403)", analystJob.status === 403, String(analystJob.status));
+    const anonJob = await fetch(`${site}/api/imports/jobs/${fakeJob}`, { redirect: "manual" });
+    check("anonymous: import job API → 401", anonJob.status === 401, String(anonJob.status));
+    const worker = await fetch(`${site}/api/imports/worker`, { method: "POST", headers: { "content-type": "application/json", authorization: "Bearer wrong" }, body: "{}" });
+    check("import worker rejects requests without the secret", worker.status === 401, String(worker.status));
 
     // Exports
     const adminCsv = await fetch(`${site}/api/export/tickets?project=DECI_SUMMER&include_text=0`, { headers: { cookie: adminCookie } });
