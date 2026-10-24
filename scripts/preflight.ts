@@ -23,6 +23,16 @@ const APP_TABLES = [
   "app_settings",
   "user_roles",
   "audit_events",
+  // Added by 20261024090000_lifecycle_and_identity.sql
+  "reporting_cycles",
+  "topic_categories",
+  "ticket_statuses",
+  "insight_rules",
+  "ticket_changes",
+  "import_jobs",
+  "import_job_rows",
+  "import_job_issues",
+  "import_job_events",
 ];
 const IDENT = /^[a-z_][a-z0-9_]*$/;
 
