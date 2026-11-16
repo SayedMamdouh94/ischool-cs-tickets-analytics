@@ -53,7 +53,18 @@ async function Summary({ searchParams }: { searchParams: Promise<SearchParamsRec
   const c = dq.consistency as Record<string, number>;
   const org = settings.app.organization_name ?? "";
 
+  const scope = ctx.options.scope;
+  const archivedInView = ctx.options.projects.filter((p) => p.status === "archived").map((p) => p.name);
+  const cycleText = scope
+    ? `Reporting cycle: ${scope.cycle_name}${scope.cycle_status === "archived" ? " (archived — historical view)" : scope.is_current ? " (current)" : ""}`
+    : "No reporting cycle selected";
+  const exports = ctx.options.coverage.filter((c) => c.snapshot_at);
+  const exportDates = exports.map((c) => Date.parse(c.snapshot_at!));
+  const exportsDiffer = exportDates.length > 1 && Math.max(...exportDates) - Math.min(...exportDates) >= 86_400_000;
+
   const filterText = [
+    cycleText,
+    archivedInView.length && scope?.cycle_status !== "archived" ? `Including archived: ${archivedInView.join(", ")}` : null,
     ctx.filters.preset === "all" ? "All available data" : `${DATE_PRESET_LABELS[ctx.filters.preset]}: ${fmtCalendarDate(ctx.range.from)} – ${fmtCalendarDate(ctx.range.to)}`,
     ctx.filters.projects.length ? `Projects: ${ctx.filters.projects.join(", ")}` : null,
     ctx.filters.programs.length ? `Programs: ${ctx.filters.programs.join(", ")}` : null,
@@ -72,6 +83,12 @@ async function Summary({ searchParams }: { searchParams: Promise<SearchParamsRec
         <p className="text-xs text-muted-foreground">
           Source: imported historical exports (data as of {fmtDateTime(ctx.options.latest_import.data_as_of)}, Africa/Cairo). Prepared by {viewer.email}.
         </p>
+        {exportsDiffer && (
+          <p className="text-xs text-muted-foreground">
+            Projects were exported on different dates — {exports.map((c) => `${c.name}: ${fmtDateTime(c.snapshot_at)}`).join("; ")}. Recent days are incomplete for projects with
+            earlier exports; trend comparisons use each project&apos;s own data period.
+          </p>
+        )}
       </header>
 
       <H2>Headline figures</H2>

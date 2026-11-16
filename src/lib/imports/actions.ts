@@ -7,6 +7,7 @@ import { createClient } from "@/lib/supabase/server";
 import { callRpc } from "@/lib/supabase/rpc";
 import { createAdminClient, hasAdminCredentials } from "@/lib/supabase/admin";
 import { IMPORT_BUCKET, MAX_IMPORT_BYTES } from "./constants";
+import type { ImportJobDetail } from "./types";
 import { scheduleWorker } from "./worker";
 
 /**
@@ -111,12 +112,22 @@ const confirmSchema = z.object({
   id: z.uuid(),
   policy: z.enum(["all_or_nothing", "import_valid_rows"]),
   previewVersion: z.number().int().min(0),
+  /** For "archive & start new": the archived project's or cycle's code, typed by the administrator. */
+  archiveConfirmation: z.string().max(40).optional(),
 });
 
 export async function confirmImport(input: z.input<typeof confirmSchema>): Promise<ImportActionResult<{ previewChanged?: boolean }>> {
   await requireViewer("admin");
   const parsed = confirmSchema.safeParse(input);
   if (!parsed.success) return { ok: false, message: "Invalid confirmation." };
+  const { data: detail, error: detailError } = await rpc<ImportJobDetail | null>("get_import_job", { p_job_id: parsed.data.id });
+  if (detailError || !detail) return { ok: false, message: detailError?.message ?? "Unknown import." };
+  if (detail.job.mode === "archive_and_start") {
+    const code = detail.job.archive_scope === "cycle" ? detail.archive_cycle?.code : detail.archive_project?.code;
+    if (!code || parsed.data.archiveConfirmation !== code) {
+      return { ok: false, message: `Type ${code ?? "the code"} to confirm archiving.` };
+    }
+  }
   const { data, error } = await rpc<{ preview_changed?: boolean; message?: string }>("confirm_import_job", {
     p_job_id: parsed.data.id,
     p_policy: parsed.data.policy,

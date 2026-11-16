@@ -46,9 +46,9 @@ describe.skipIf(!reachable)("analytics functions vs. source files", () => {
       expect(row.resolution_avg_s).toBe(Math.round(res.reduce((a, b) => a + b, 0) / res.length));
       expect(row.response_n).toBe(resp.length);
       expect(row.response_median_s).toBe(Math.round(median(resp)!));
-      // Threshold breaches with the default 72 h / 24 h thresholds.
-      expect(row.resolution_breaches).toBe(res.filter((s) => s > 72 * 3600).length);
-      expect(row.response_breaches).toBe(resp.filter((s) => s > 24 * 3600).length);
+      // Threshold breaches with the configured thresholds (administrators can change them).
+      expect(row.resolution_breaches).toBe(res.filter((s) => s > data.thresholds.resolution_seconds).length);
+      expect(row.response_breaches).toBe(resp.filter((s) => s > data.thresholds.response_seconds).length);
     }
   });
 

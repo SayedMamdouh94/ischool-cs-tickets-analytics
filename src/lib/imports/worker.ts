@@ -147,8 +147,11 @@ async function validateJob(db: Admin, worker: string, job: ClaimedJob, deadline:
 
   // Rows 1..rows_staged are already in the database (earlier invocation); continue after them.
   const remaining = outcome.stageRows.filter((r) => r.row_number > job.rows_staged);
+  let progressed = false;
   for (const chunk of chunkRows(remaining)) {
-    if (Date.now() > deadline) throw new BudgetExhausted();
+    // Every run stages at least one chunk, so a slow parse can never stall a job forever.
+    if (progressed && Date.now() > deadline) throw new BudgetExhausted();
+    progressed = true;
     const first = chunk[0].row_number;
     const last = chunk[chunk.length - 1].row_number;
     const issues = outcome.rowIssues.filter((i) => i.row_number !== undefined && i.row_number >= first && i.row_number <= last);
@@ -164,8 +167,9 @@ async function validateJob(db: Admin, worker: string, job: ClaimedJob, deadline:
 }
 
 async function applyJob(db: Admin, worker: string, job: ClaimedJob, deadline: number): Promise<void> {
-  for (;;) {
-    if (Date.now() > deadline) throw new BudgetExhausted();
+  for (let batches = 0; ; batches++) {
+    // At least one batch per run (guaranteed progress), then respect the time budget.
+    if (batches > 0 && Date.now() > deadline) throw new BudgetExhausted();
     const result = await rpc<{ done: boolean; status: string }>(db, "worker_apply_batch", {
       p_job_id: job.id,
       p_worker: worker,
@@ -189,7 +193,7 @@ export async function runImportWorker(opts: { jobId?: string; budgetMs?: number 
   const deadline = Date.now() + (opts.budgetMs ?? WORKER_BUDGET_MS);
   const result: WorkerResult = { processed: [], continued: [], errors: [] };
 
-  while (Date.now() < deadline) {
+  for (let claims = 0; claims === 0 || Date.now() < deadline; claims++) {
     let job: ClaimedJob | null;
     try {
       job = await rpc<ClaimedJob | null>(db, "worker_claim_job", { p_worker: worker, p_job_id: opts.jobId ?? null, p_lease_seconds: LEASE_SECONDS });

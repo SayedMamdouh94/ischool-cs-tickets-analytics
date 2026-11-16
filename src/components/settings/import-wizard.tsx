@@ -12,7 +12,7 @@ import { Progress } from "@/components/ui/progress";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { completeUpload, startImport, type StartImportInput } from "@/lib/imports/actions";
-import { MAX_IMPORT_BYTES } from "@/lib/imports/constants";
+import { MAX_IMPORT_BYTES, MAX_IMPORT_ROWS } from "@/lib/imports/constants";
 import type { ReportingCycle, SettingsProject } from "@/lib/analytics/types";
 import { fmtInt } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -421,7 +421,9 @@ export function ImportWizard({ projects, cycles, initialProject }: { projects: S
             ) : (
               <>
                 <p className="text-sm font-medium">Drop the export here, or click to choose</p>
-                <p className="text-xs text-muted-foreground">.xlsx or .csv (UTF-8) · up to {MAX_IMPORT_BYTES / 1024 / 1024} MB</p>
+                <p className="text-xs text-muted-foreground">
+                  .xlsx or .csv (UTF-8) · up to {MAX_IMPORT_BYTES / 1024 / 1024} MB and {MAX_IMPORT_ROWS.toLocaleString("en-US")} rows
+                </p>
               </>
             )}
             <input ref={input} type="file" accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" className="sr-only" onChange={(e) => pickFile(e.target.files?.[0])} />

@@ -1,7 +1,8 @@
 import ExcelJS from "exceljs";
+import JSZip from "jszip";
 import { SOURCE_COLUMNS, type SourceColumn, type SourceRow } from "@/lib/ingest/columns";
 import { CsvStructureError, decodeCsv, parseTicketCsv, resolveHeader, type ParsedCsv, type ParsedCsvRecord } from "@/lib/ingest/csv";
-import { COLUMN_DOCS, DATA_SHEET, NON_DATA_SHEETS } from "./constants";
+import { COLUMN_DOCS, DATA_SHEET, MAX_IMPORT_ROWS, NON_DATA_SHEETS } from "./constants";
 import { excelDateToWallClock } from "./normalize";
 import type { ImportIssue } from "./validate";
 
@@ -24,12 +25,20 @@ const TEXT_COLUMNS = new Set(COLUMN_DOCS.filter((d) => d.text).map((d) => d.colu
 const ID_COLUMNS = new Set<SourceColumn>(["Ticket_ID", "Owner_ID", "Affected_Student_ID", "Organization_ID"]);
 const MAX_EXACT_ID = 999_999_999_999_999; // 15 digits: Excel keeps at most 15 significant digits
 
+function tooManyRows(rows: number): CsvStructureError {
+  return new CsvStructureError(
+    `The file has ${rows.toLocaleString("en-US")} rows; one import can hold at most ${MAX_IMPORT_ROWS.toLocaleString("en-US")}. Split the export by date range and import the parts one after another (re-imports never duplicate tickets).`,
+    "FILE_TOO_LARGE",
+  );
+}
+
 /** Reads a CSV or Excel upload into the same record structure. Throws CsvStructureError for file-level problems. */
 export async function readUpload(buffer: Buffer, format: UploadFormat): Promise<UploadContents> {
   if (buffer.length === 0) throw new CsvStructureError("The file is empty.", "FILE_EMPTY");
   if (format === "csv") {
     const { text, delimiter } = decodeCsv(buffer);
     const parsed = parseTicketCsv(text, { delimiter, lenientHeader: true, allowReplacementChars: true });
+    if (parsed.records.length > MAX_IMPORT_ROWS) throw tooManyRows(parsed.records.length);
     return {
       parsed,
       format,
@@ -73,6 +82,8 @@ async function readXlsx(buffer: Buffer): Promise<UploadContents> {
   if (!(buffer[0] === 0x50 && buffer[1] === 0x4b)) {
     throw new CsvStructureError("The file is not a valid .xlsx workbook. Save it as \"Excel Workbook (.xlsx)\" or as CSV UTF-8.", "FILE_TYPE_MISMATCH");
   }
+  const declared = await declaredSheetRows(buffer);
+  if (declared !== null && declared - 1 > MAX_IMPORT_ROWS) throw tooManyRows(declared - 1);
   const workbook = new ExcelJS.Workbook();
   try {
     await workbook.xlsx.load(buffer as unknown as ArrayBuffer);
@@ -150,5 +161,40 @@ async function readXlsx(buffer: Buffer): Promise<UploadContents> {
     if (dates.length > 0) excelDates.set(rowNumber, dates);
   });
 
+  if (records.length > MAX_IMPORT_ROWS) throw tooManyRows(records.length);
   return { parsed: { header, records, ignoredColumns: ignored }, format: "xlsx", sheet: sheet.name, fileIssues, cellIssues, excelDates };
+}
+
+/**
+ * Largest row count declared by any worksheet (`<dimension ref="A1:S41001"/>`),
+ * read from the first bytes of each sheet without decompressing or parsing the
+ * whole workbook. Null when no sheet declares one (the row count is then
+ * checked after parsing).
+ */
+export async function declaredSheetRows(buffer: Buffer): Promise<number | null> {
+  let zip: JSZip;
+  try {
+    zip = await JSZip.loadAsync(buffer);
+  } catch {
+    return null; // not a readable zip: ExcelJS reports a clear error below
+  }
+  let max: number | null = null;
+  for (const entry of zip.file(/^xl\/worksheets\/sheet\d+\.xml$/)) {
+    const head = await new Promise<string>((resolve) => {
+      let text = "";
+      const stream = entry.nodeStream("nodebuffer");
+      stream.on("data", (chunk: Buffer) => {
+        text += chunk.toString("utf8");
+        if (text.length > 4096 || /<dimension\b/.test(text)) {
+          (stream as unknown as { destroy?: () => void; pause: () => void }).pause();
+          resolve(text);
+        }
+      });
+      stream.on("end", () => resolve(text));
+      stream.on("error", () => resolve(text));
+    });
+    const m = /<dimension\s+ref="[A-Z]+\d+(?::[A-Z]+(\d+))?"/.exec(head);
+    if (m?.[1]) max = Math.max(max ?? 0, Number(m[1]));
+  }
+  return max;
 }

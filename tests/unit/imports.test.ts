@@ -2,9 +2,9 @@ import ExcelJS from "exceljs";
 import { describe, expect, it } from "vitest";
 import { SOURCE_COLUMNS, type SourceRow } from "@/lib/ingest/columns";
 import { CsvStructureError, HeaderMismatchError, decodeCsv, parseTicketCsv } from "@/lib/ingest/csv";
-import { COLUMN_DOCS, TEMPLATE_EXAMPLE_MARKER } from "@/lib/imports/constants";
+import { COLUMN_DOCS, MAX_IMPORT_ROWS, TEMPLATE_EXAMPLE_MARKER } from "@/lib/imports/constants";
 import { normalizeTimestampText } from "@/lib/imports/normalize";
-import { readUpload } from "@/lib/imports/read-upload";
+import { declaredSheetRows, readUpload } from "@/lib/imports/read-upload";
 import { validationReportCsv } from "@/lib/imports/report";
 import { buildCsvTemplate, buildXlsxTemplate } from "@/lib/imports/template";
 import { validateUpload, type ValidationContext } from "@/lib/imports/validate";
@@ -212,6 +212,33 @@ describe("templates", () => {
     const wb = new ExcelJS.Workbook();
     wb.addWorksheet("Examples").addRow([...SOURCE_COLUMNS]);
     await expect(readUpload(Buffer.from(await wb.xlsx.writeBuffer()), "xlsx")).rejects.toThrow(/no "Tickets" sheet/);
+  });
+});
+
+describe("file size limits", () => {
+  it("reads the declared row count of a workbook without parsing it", async () => {
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet("Tickets");
+    ws.addRow([...SOURCE_COLUMNS]);
+    for (let i = 0; i < 25; i++) ws.addRow(SOURCE_COLUMNS.map(() => "x"));
+    expect(await declaredSheetRows(Buffer.from(await wb.xlsx.writeBuffer()))).toBe(26);
+  });
+
+  it("refuses a workbook declaring more rows than one import may hold, before parsing it", async () => {
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet("Tickets");
+    ws.addRow([...SOURCE_COLUMNS]);
+    ws.getCell(MAX_IMPORT_ROWS + 2, 1).value = "1"; // one cell far down: tiny file, huge declared range
+    const buf = Buffer.from(await wb.xlsx.writeBuffer());
+    const t = performance.now();
+    await expect(readUpload(buf, "xlsx")).rejects.toThrow(/at most 120,000.*Split the export by date range/);
+    expect(performance.now() - t).toBeLessThan(2000);
+  });
+
+  it("refuses a CSV with more rows than one import may hold", async () => {
+    const line = SOURCE_COLUMNS.map(() => "").join(",");
+    const big = `${SOURCE_COLUMNS.join(",")}\n${`${line}\n`.repeat(MAX_IMPORT_ROWS + 1)}`;
+    await expect(readUpload(Buffer.from(big), "csv")).rejects.toMatchObject({ code: "FILE_TOO_LARGE" });
   });
 });
 

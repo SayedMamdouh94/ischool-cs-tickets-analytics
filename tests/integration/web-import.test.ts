@@ -424,6 +424,69 @@ describe.skipIf(!reachable)("web imports (storage → worker → preview → con
     expect(closed.data.rows[0].unclassified_status).toBe(0);
   });
 
+  it("archives and restores a whole cycle directly, handing over the current cycle", async () => {
+    expect((await rpc(admin, "create_reporting_cycle", { p_cycle: { code: "IT_CYC_C", name: "IT cycle C" }, p_make_current: false })).error).toBeNull();
+    for (const [code, org] of [["IT_P4", 990004], ["IT_P5", 990005]] as const) {
+      const r = await rpc(admin, "create_project", { p_project: { code, name: code, program: "ITP", intake: "C", organization_id: org }, p_cycle: "IT_CYC_C" });
+      expect(r.error).toBeNull();
+    }
+    expect((await rpc(admin, "set_current_cycle", { p_code: "IT_CYC_C" })).error).toBeNull();
+    expect((await rpc(admin, "archive_cycle", { p_code: "IT_CYC_C", p_reason: "test", p_confirm: "IT_CYC" })).error?.message).toMatch(/Confirmation does not match/);
+    const archived = await rpc<{ archived_projects: number }>(admin, "archive_cycle", { p_code: "IT_CYC_C", p_reason: "cycle finished", p_confirm: "IT_CYC_C", p_new_current: "CYCLE_2026" });
+    expect(archived.error).toBeNull();
+    expect(archived.data.archived_projects).toBe(2);
+    const scope = await rpc<{ scope: { cycle: string } }>(analyst, "get_filter_options", { p_scope: {} });
+    expect(scope.data.scope.cycle).toBe("CYCLE_2026");
+    expect((await rpc(admin, "archive_project", { p_code: "IT_P4", p_reason: "", p_confirm: "IT_P4" })).error?.message).toMatch(/Only an active project/);
+    expect((await rpc(admin, "restore_project", { p_code: "IT_P4" })).error?.message).toMatch(/archived reporting cycle/);
+    const hist = await rpc<{ projects: { code: string; status: string }[] }>(analyst, "get_filter_options", { p_scope: { cycle: "IT_CYC_C" } });
+    expect(hist.data.projects.map((p) => `${p.code}:${p.status}`).sort()).toEqual(["IT_P4:archived", "IT_P5:archived"]);
+    const restored = await rpc<{ restored_projects: number }>(admin, "restore_cycle", { p_code: "IT_CYC_C", p_make_current: false });
+    expect(restored.data.restored_projects).toBe(2);
+    const after = await rpc<{ rows: { tickets: number }[] }>(analyst, "get_grouped_metrics", { p_filters: {}, p_dimension: "none" });
+    expect(after.data.rows[0].tickets).toBe(12969);
+    const db = sql();
+    try {
+      const actions = await db<{ action: string }[]>`select action from public.audit_events where details->>'code' = 'IT_CYC_C' order by id`;
+      expect(actions.map((a) => a.action)).toEqual(expect.arrayContaining(["cycle.create", "cycle.set_current", "cycle.archive", "cycle.restore"]));
+    } finally {
+      await db.end();
+    }
+  });
+
+  it("an import that stops part-way is flagged as partial and resumes on retry without duplicates", async () => {
+    const rows = Array.from({ length: 1200 }, (_, i) => T(999210000 + i, { Created_At: "2026-08-10 10:00:00 +0300", Responded_At: "", Resolved_At: "" }));
+    const d = await validate({ mode: "upsert", project_code: "IT_P1" }, csv(rows), "it-partial.csv");
+    expect((d.job.preview as ImportPreview).counts).toMatchObject({ new: 1200, invalid: 0 });
+    expect((await rpc(admin, "confirm_import_job", { p_job_id: d.job.id, p_policy: "all_or_nothing", p_preview_version: d.job.preview_version })).error).toBeNull();
+    const db = sql();
+    try {
+      // Hold the lease so the scheduler stays away, apply one batch, then "crash".
+      await db`update public.import_jobs set lease_owner = 'test-hold', lease_expires_at = now() + interval '10 minutes' where id = ${d.job.id}`;
+      await db`select private.apply_import_batch(${d.job.id}::uuid, 500)`;
+      const failed = await svc.rpc("worker_fail", { p_job_id: d.job.id, p_worker: "test-hold", p_message: "Simulated crash", p_retryable: false });
+      expect(failed.data).toBe("failed");
+      const mid = await job(d.job.id);
+      expect(mid.job).toMatchObject({ status: "failed", rows_applied: 500, rows_to_apply: 1200 });
+      expect(mid.run).toMatchObject({ status: "failed", inserted_count: 500 });
+      const flagged = await rpc<{ partial_imports: { project: string; rows_applied: number }[] }>(analyst, "get_filter_options", { p_scope: { cycle: "IT_CYC_A" } });
+      expect(flagged.data.partial_imports).toEqual([{ project: "IT_P1", rows_applied: 500, rows_to_apply: 1200 }]);
+
+      expect((await rpc<{ status: string }>(admin, "retry_import_job", { p_job_id: d.job.id })).data.status).toBe("importing");
+      await runImportWorker({ jobId: d.job.id, budgetMs: 120_000 });
+      const done = await job(d.job.id);
+      expect(done.job.status).toBe("completed");
+      expect(done.run).toMatchObject({ status: "completed", inserted_count: 1200, updated_count: 0 });
+      const [{ n, distinct_ids }] = await db<{ n: number; distinct_ids: number }[]>`
+        select count(*)::int as n, count(distinct ticket_id)::int as distinct_ids from public.tickets where ticket_id between 999210000 and 999211199`;
+      expect([n, distinct_ids]).toEqual([1200, 1200]);
+      const cleared = await rpc<{ partial_imports: unknown[] }>(analyst, "get_filter_options", { p_scope: { cycle: "IT_CYC_A" } });
+      expect(cleared.data.partial_imports).toEqual([]);
+    } finally {
+      await db.end();
+    }
+  });
+
   it("only administrators can import, manage projects or mappings; workers need the service role", async () => {
     const spec = { mode: "upsert", project_code: "IT_P1", filename: "it-x.csv", size_bytes: 10 };
     for (const [fn, args] of [

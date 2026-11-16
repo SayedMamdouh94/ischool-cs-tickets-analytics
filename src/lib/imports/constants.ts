@@ -3,6 +3,14 @@ import type { SourceColumn } from "@/lib/ingest/columns";
 /** Uploads above this size are refused (also enforced by the Storage bucket and in SQL). */
 export const MAX_IMPORT_BYTES = 50 * 1024 * 1024;
 
+/**
+ * Data rows per file. Keeps validation of one file inside a single background
+ * run (Excel parsing is ~10× slower than CSV; a 50 MB workbook could otherwise
+ * hold ~300,000 rows). 9× the largest export so far; larger exports are split
+ * by date range and imported one after another.
+ */
+export const MAX_IMPORT_ROWS = 120_000;
+
 export const IMPORT_BUCKET = "imports";
 
 /** Marker carried by every template example row; rows containing it are always rejected. */
@@ -52,7 +60,7 @@ export const ISSUE_SEVERITY_LABELS = { error: "Blocking error", warning: "Warnin
 /** Plain-language explanation for every validation code (validation report + UI). */
 export const ISSUE_CODE_HELP: Record<string, string> = {
   FILE_EMPTY: "The file has no content.",
-  FILE_TOO_LARGE: "The file exceeds the upload limit.",
+  FILE_TOO_LARGE: "The file exceeds the upload limit (50 MB or 120,000 rows).",
   FILE_ENCODING_INVALID: "The file is not UTF-8 encoded; Arabic text would be corrupted.",
   FILE_TYPE_MISMATCH: "The file content does not match its extension.",
   FILE_UNREADABLE: "The file could not be read as a spreadsheet.",

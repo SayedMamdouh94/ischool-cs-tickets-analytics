@@ -8,6 +8,8 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
@@ -84,6 +86,16 @@ export function JobMonitor({ initial, issues, issuesTotal }: { initial: ImportJo
     start(async () => {
       const r = await fn();
       if (r.ok) toast.success(r.message);
+      else toast.error(r.message);
+      router.refresh();
+    });
+
+  const doConfirm = (archiveConfirmation?: string) =>
+    start(async () => {
+      if (!policy) return;
+      const r = await confirmImport({ id: job.id, policy, previewVersion: job.preview_version, archiveConfirmation });
+      if (r.ok) toast.success(r.message);
+      else if (r.data?.previewChanged) toast.warning(r.message);
       else toast.error(r.message);
       router.refresh();
     });
@@ -220,21 +232,18 @@ export function JobMonitor({ initial, issues, issuesTotal }: { initial: ImportJo
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-2">
-              <Button
-                disabled={pending || counts.valid === 0 || policy === null}
-                onClick={() =>
-                  start(async () => {
-                    if (!policy) return;
-                    const r = await confirmImport({ id: job.id, policy, previewVersion: job.preview_version });
-                    if (r.ok) toast.success(r.message);
-                    else if (r.data?.previewChanged) toast.warning(r.message);
-                    else toast.error(r.message);
-                    router.refresh();
-                  })
-                }
-              >
-                {pending ? <Loader2 className="animate-spin" /> : <Check />} Confirm import of {fmtInt(counts.valid)} rows
-              </Button>
+              {job.mode === "archive_and_start" ? (
+                <ArchiveAndStartDialog
+                  detail={detail}
+                  rows={counts.valid}
+                  disabled={pending || counts.valid === 0 || policy === null}
+                  onConfirm={(confirmation) => doConfirm(confirmation)}
+                />
+              ) : (
+                <Button disabled={pending || counts.valid === 0 || policy === null} onClick={() => doConfirm()}>
+                  {pending ? <Loader2 className="animate-spin" /> : <Check />} Confirm import of {fmtInt(counts.valid)} rows
+                </Button>
+              )}
               <Button variant="outline" disabled={pending} onClick={() => act(() => refreshPreview(job.id))}>
                 <RefreshCw /> Recompute preview
               </Button>
@@ -485,6 +494,83 @@ function Stat({ label, value, tone }: { label: string; value: number; tone?: "go
         {fmtInt(value)}
       </p>
     </div>
+  );
+}
+
+/** "Archive & start new" archives live data: an explicit dialog with a typed confirmation precedes it. */
+function ArchiveAndStartDialog({
+  detail,
+  rows,
+  disabled,
+  onConfirm,
+}: {
+  detail: ImportJobDetail;
+  rows: number;
+  disabled: boolean;
+  onConfirm: (confirmation: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [typed, setTyped] = useState("");
+  const job = detail.job;
+  const target = job.archive_scope === "cycle" ? detail.archive_cycle : detail.archive_project;
+  const code = target?.code ?? "";
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(o) => {
+        setOpen(o);
+        if (!o) setTyped("");
+      }}
+    >
+      <DialogTrigger asChild>
+        <Button disabled={disabled}>
+          <Check /> Confirm import and archive…
+        </Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>
+            Archive {job.archive_scope === "cycle" ? "the reporting cycle" : "project"} {target?.name} and start {job.new_project?.name}?
+          </DialogTitle>
+          <DialogDescription asChild>
+            <div className="space-y-2 text-sm">
+              <ul className="list-disc space-y-1 pl-5">
+                <li>
+                  {fmtInt(rows)} rows are imported into the new project <strong>{job.new_project?.name}</strong> ({job.new_project?.code}, Organization_ID{" "}
+                  {job.new_project?.organization_id})
+                  {job.archive_scope === "cycle" ? <> in the new cycle <strong>{job.new_cycle?.name}</strong>, which becomes the current cycle</> : null}.
+                </li>
+                <li>
+                  Only when every row has been imported, {job.archive_scope === "cycle" ? "the cycle and all its active projects are" : "the project is"} archived and the new project
+                  becomes active — in one step. If the import fails, nothing is archived.
+                </li>
+                <li>Archiving is not deletion: all existing tickets and history are kept, stay available in the history view, and can be restored.</li>
+              </ul>
+            </div>
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-1.5">
+          <Label htmlFor="archive-start-confirm">
+            Type <code className="rounded bg-muted px-1">{code}</code> to confirm
+          </Label>
+          <Input id="archive-start-confirm" value={typed} onChange={(e) => setTyped(e.target.value)} autoComplete="off" className="font-mono" />
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setOpen(false)}>
+            Back
+          </Button>
+          <Button
+            disabled={!code || typed !== code}
+            onClick={() => {
+              setOpen(false);
+              onConfirm(typed);
+            }}
+          >
+            Import and archive
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

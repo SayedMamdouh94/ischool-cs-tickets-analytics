@@ -1,6 +1,6 @@
 import ExcelJS from "exceljs";
 import { SOURCE_COLUMNS } from "@/lib/ingest/columns";
-import { COLUMN_DOCS, DATA_SHEET, MAX_IMPORT_BYTES, TEMPLATE_EXAMPLE_MARKER, type ColumnRequirement } from "./constants";
+import { COLUMN_DOCS, DATA_SHEET, MAX_IMPORT_BYTES, MAX_IMPORT_ROWS, TEMPLATE_EXAMPLE_MARKER, type ColumnRequirement } from "./constants";
 
 /**
  * Downloadable import templates. The data sheet has exactly the 19 export
@@ -165,7 +165,7 @@ export async function buildXlsxTemplate(opts: TemplateOptions): Promise<Buffer> 
     "5. Organization_ID may be left empty: it is filled with the selected project's value. A different value rejects the row.",
     "6. The Examples sheet shows valid rows. It is never imported, and example rows are rejected even if copied into the Tickets sheet.",
     "7. Upload in Settings & Imports → Imports as .xlsx, or save as \"CSV UTF-8 (Comma delimited)\" to keep Arabic text intact.",
-    `8. Maximum file size: ${Math.round(MAX_IMPORT_BYTES / 1024 / 1024)} MB. Larger exports can be split (e.g. by month) and imported one after another.`,
+    `8. Maximum per file: ${Math.round(MAX_IMPORT_BYTES / 1024 / 1024)} MB and ${MAX_IMPORT_ROWS.toLocaleString("en-US")} rows. Larger exports can be split (e.g. by month) and imported one after another.`,
     "9. Before anything is written you will see a preview (new / updated / unchanged / invalid) and must confirm.",
     "10. Re-importing the same file changes nothing. Tickets missing from a later export are kept, never deleted.",
     "11. A row is applied only if its export is at least as recent as the one that last updated that ticket (older exports never overwrite newer data).",
