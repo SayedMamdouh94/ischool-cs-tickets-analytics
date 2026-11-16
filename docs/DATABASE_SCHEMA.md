@@ -10,6 +10,8 @@ Migrations (apply in order with the Supabase CLI):
 | `20261014090300_analytics.sql` | Filtering primitives and all analytics / settings / access functions |
 | `20261024090000_lifecycle_and_identity.sql` | Reporting cycles, project lifecycle (draft/active/archived), internal ticket key, topic→category mapping table, status classes, insight rules, ticket change history, import jobs/staging/issues/events, private `imports` bucket, RLS for all of them |
 | `20261024090100_scoped_analytics.sql` | Scope-aware analytics (one cycle, archived only on request), configurable open/closed statuses, coverage-aware period comparison, scope catalog, project-aware ticket detail and export |
+| `20261116090000_cheap_import_confirmation.sql` | Preview fingerprint (`import_jobs.preview_basis`): confirmation recomputes the preview only when the underlying data changed |
+| `20261116090100_worker_statement_timeout.sql` | 55 s statement timeout for the service role (server-side import worker); signed-in users keep 8 s |
 | `20261024090200_admin_and_import_jobs.sql` | Project/cycle/category/status/insight-rule administration, the import-job lifecycle (admin), worker functions (service role), batched SQL applier, pg_cron scheduler + pg_net watchdog |
 
 ## Tables
