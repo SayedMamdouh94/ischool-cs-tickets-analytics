@@ -12,7 +12,7 @@ import { BarListChart } from "@/components/charts/bar-list-chart";
 import { SERIES_COLORS } from "@/components/charts/colors";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { requireViewer } from "@/lib/auth/dal";
+import { requirePermission } from "@/lib/auth/dal";
 import { getCrossTab, getDataQuality, getGroupedMetrics, resolveFilterContext } from "@/lib/analytics/queries";
 import type { CrossTab, GroupMetrics } from "@/lib/analytics/types";
 import { hrefWithFilters, NONE_TOKEN, type SearchParamsRecord } from "@/lib/filters/schema";
@@ -90,7 +90,7 @@ function crossTable(tab: CrossTab, label: string, projects: { code: string; name
 }
 
 async function TeamContent({ searchParams }: { searchParams: Promise<SearchParamsRecord> }) {
-  await requireViewer();
+  await requirePermission("page.team");
   const ctx = await resolveFilterContext(await searchParams);
   const [overallM, responders, resolvers, respByProject, resByProject, dq] = await Promise.all([
     getGroupedMetrics(ctx.rpc, "none"),

@@ -5,7 +5,7 @@ import { InsightCard } from "@/components/dashboard/insight-card";
 import { SectionHeading } from "@/components/dashboard/page-header";
 import { EmptyState } from "@/components/dashboard/states";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { requireViewer } from "@/lib/auth/dal";
+import { requirePermission } from "@/lib/auth/dal";
 import { describePeriods, type Insight } from "@/lib/analytics/insights";
 import { loadInsights } from "@/lib/analytics/insights-loader";
 import { resolveFilterContext } from "@/lib/analytics/queries";
@@ -37,7 +37,7 @@ export default function InsightsPage({ searchParams }: PageProps<"/insights">) {
 }
 
 async function InsightsContent({ searchParams }: { searchParams: Promise<SearchParamsRecord> }) {
-  await requireViewer();
+  await requirePermission("page.insights");
   const ctx = await resolveFilterContext(await searchParams);
   const { insights, rules: R, topicPeriods } = await loadInsights(ctx);
   if (insights.length === 0) return <EmptyState title="No insights for this selection" description="There is not enough data in this view for any rule to apply." />;

@@ -6,7 +6,7 @@ import { FilterSection } from "@/components/dashboard/filter-section";
 import { FilterBarSkeleton, PageSkeleton } from "@/components/dashboard/states";
 import { PendingContent } from "@/components/filters/filter-transition";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { requireViewer } from "@/lib/auth/dal";
+import { requirePermission } from "@/lib/auth/dal";
 import { loadInsights } from "@/lib/analytics/insights-loader";
 import { getDataQuality, getGroupedMetrics, getSettings, resolveFilterContext } from "@/lib/analytics/queries";
 import { DATE_PRESET_LABELS, type SearchParamsRecord } from "@/lib/filters/schema";
@@ -37,7 +37,7 @@ function H2({ children }: { children: React.ReactNode }) {
 }
 
 async function Summary({ searchParams }: { searchParams: Promise<SearchParamsRecord> }) {
-  const viewer = await requireViewer();
+  const viewer = await requirePermission("page.reports");
   const ctx = await resolveFilterContext(await searchParams);
   const [overallM, projectsM, topicsM, statusM, dq, settings, { insights }] = await Promise.all([
     getGroupedMetrics(ctx.rpc, "none"),

@@ -2,11 +2,9 @@
 
 import { refresh } from "next/cache";
 import { z } from "zod";
-import { requireViewer } from "@/lib/auth/dal";
+import { requirePermission } from "@/lib/auth/dal";
 import { createClient } from "@/lib/supabase/server";
 import { callRpc } from "@/lib/supabase/rpc";
-import { createAdminClient, hasAdminCredentials } from "@/lib/supabase/admin";
-import { siteUrl } from "@/lib/env";
 
 export interface ActionResult {
   ok: boolean;
@@ -14,8 +12,9 @@ export interface ActionResult {
 }
 
 /**
- * Settings mutations. Each action re-verifies the administrator role here AND
+ * Settings mutations. Each action re-verifies the matching permission here AND
  * the SQL functions enforce it again in PostgreSQL (and audit the change).
+ * User and role management lives in ./access-actions.ts.
  */
 async function rpc(fn: string, args: Record<string, unknown>) {
   return callRpc<unknown>(await createClient(), fn, args);
@@ -27,7 +26,7 @@ const thresholdSchema = z.object({
 });
 
 export async function saveThresholds(_prev: ActionResult | null, formData: FormData): Promise<ActionResult> {
-  await requireViewer("admin");
+  await requirePermission("settings.manage");
   const parsed = thresholdSchema.safeParse({ response_hours: formData.get("response_hours"), resolution_hours: formData.get("resolution_hours") });
   if (!parsed.success) return { ok: false, message: "Thresholds must be positive numbers of hours (max 8,760)." };
   for (const [key, value] of Object.entries(parsed.data)) {
@@ -45,7 +44,7 @@ const prefsSchema = z.object({
 });
 
 export async function savePreferences(_prev: ActionResult | null, formData: FormData): Promise<ActionResult> {
-  await requireViewer("admin");
+  await requirePermission("settings.manage");
   const parsed = prefsSchema.safeParse({
     date_preset_anchor: formData.get("date_preset_anchor"),
     default_date_preset: formData.get("default_date_preset"),
@@ -93,7 +92,7 @@ function firstIssue(error: z.ZodError): string {
 }
 
 export async function createProject(_prev: ActionResult | null, formData: FormData): Promise<ActionResult> {
-  await requireViewer("admin");
+  await requirePermission("projects.manage");
   const parsed = projectFromForm(formData);
   if (!parsed.success) return { ok: false, message: firstIssue(parsed.error) };
   const cycle = formData.get("cycle");
@@ -104,7 +103,7 @@ export async function createProject(_prev: ActionResult | null, formData: FormDa
 }
 
 export async function saveProject(_prev: ActionResult | null, formData: FormData): Promise<ActionResult> {
-  await requireViewer("admin");
+  await requirePermission("projects.manage");
   const parsed = projectFromForm(formData);
   if (!parsed.success) return { ok: false, message: firstIssue(parsed.error) };
   const { error } = await rpc("update_project", { p_code: parsed.data.code, p_project: parsed.data });
@@ -116,7 +115,7 @@ export async function saveProject(_prev: ActionResult | null, formData: FormData
 const codeSchema = z.string().regex(/^[A-Z][A-Z0-9_]{1,39}$/);
 
 export async function archiveProject(code: string, reason: string, confirm: string): Promise<ActionResult> {
-  await requireViewer("admin");
+  await requirePermission("projects.manage");
   if (!codeSchema.safeParse(code).success) return { ok: false, message: "Invalid project." };
   const { error } = await rpc("archive_project", { p_code: code, p_reason: reason.slice(0, 500), p_confirm: confirm });
   if (error) return { ok: false, message: error.message };
@@ -125,7 +124,7 @@ export async function archiveProject(code: string, reason: string, confirm: stri
 }
 
 export async function restoreProject(code: string): Promise<ActionResult> {
-  await requireViewer("admin");
+  await requirePermission("projects.manage");
   if (!codeSchema.safeParse(code).success) return { ok: false, message: "Invalid project." };
   const { error } = await rpc("restore_project", { p_code: code });
   if (error) return { ok: false, message: error.message };
@@ -140,7 +139,7 @@ const cycleSchema = z.object({
 });
 
 export async function createCycle(_prev: ActionResult | null, formData: FormData): Promise<ActionResult> {
-  await requireViewer("admin");
+  await requirePermission("projects.manage");
   const parsed = cycleSchema.safeParse({
     code: formData.get("code"),
     name: formData.get("name"),
@@ -154,7 +153,7 @@ export async function createCycle(_prev: ActionResult | null, formData: FormData
 }
 
 export async function setCurrentCycle(code: string): Promise<ActionResult> {
-  await requireViewer("admin");
+  await requirePermission("projects.manage");
   if (!codeSchema.safeParse(code).success) return { ok: false, message: "Invalid cycle." };
   const { error } = await rpc("set_current_cycle", { p_code: code });
   if (error) return { ok: false, message: error.message };
@@ -163,7 +162,7 @@ export async function setCurrentCycle(code: string): Promise<ActionResult> {
 }
 
 export async function archiveCycle(code: string, reason: string, confirm: string, newCurrent: string | null): Promise<ActionResult> {
-  await requireViewer("admin");
+  await requirePermission("projects.manage");
   if (!codeSchema.safeParse(code).success) return { ok: false, message: "Invalid cycle." };
   const { data, error } = await callRpc<{ archived_projects: number }>(await createClient(), "archive_cycle", {
     p_code: code,
@@ -177,7 +176,7 @@ export async function archiveCycle(code: string, reason: string, confirm: string
 }
 
 export async function restoreCycle(code: string, makeCurrent: boolean): Promise<ActionResult> {
-  await requireViewer("admin");
+  await requirePermission("projects.manage");
   if (!codeSchema.safeParse(code).success) return { ok: false, message: "Invalid cycle." };
   const { data, error } = await callRpc<{ restored_projects: number }>(await createClient(), "restore_cycle", { p_code: code, p_make_current: makeCurrent });
   if (error) return { ok: false, message: error.message };
@@ -186,7 +185,7 @@ export async function restoreCycle(code: string, makeCurrent: boolean): Promise<
 }
 
 export async function mapTopic(topic: string, categoryCode: string | null): Promise<ActionResult> {
-  await requireViewer("admin");
+  await requirePermission("categories.manage");
   if (typeof topic !== "string" || topic.trim().length === 0 || topic.length > 500) return { ok: false, message: "Invalid topic." };
   const { data, error } = await callRpc<{ tickets_reclassified: number }>(await createClient(), "set_topic_category", {
     p_topic: topic,
@@ -205,7 +204,7 @@ const categorySchema = z.object({
 });
 
 export async function saveCategory(_prev: ActionResult | null, formData: FormData): Promise<ActionResult> {
-  await requireViewer("admin");
+  await requirePermission("categories.manage");
   const parsed = categorySchema.safeParse({
     code: formData.get("code"),
     name_en: formData.get("name_en"),
@@ -226,7 +225,7 @@ export async function saveCategory(_prev: ActionResult | null, formData: FormDat
 }
 
 export async function setStatusClass(status: string, statusClass: "open" | "closed"): Promise<ActionResult> {
-  await requireViewer("admin");
+  await requirePermission("categories.manage");
   if (!["open", "closed"].includes(statusClass)) return { ok: false, message: "Invalid class." };
   const { error } = await rpc("set_status_class", { p_status: status, p_class: statusClass, p_label: null });
   if (error) return { ok: false, message: error.message };
@@ -235,7 +234,7 @@ export async function setStatusClass(status: string, statusClass: "open" | "clos
 }
 
 export async function saveInsightRules(_prev: ActionResult | null, formData: FormData): Promise<ActionResult> {
-  await requireViewer("admin");
+  await requirePermission("settings.manage");
   const changed: string[] = [];
   for (const [key, raw] of formData.entries()) {
     if (!key.startsWith("rule:") || typeof raw !== "string") continue;
@@ -249,58 +248,4 @@ export async function saveInsightRules(_prev: ActionResult | null, formData: For
   }
   refresh();
   return { ok: true, message: changed.length ? `Saved ${changed.length} insight setting(s). Insights now use the new values.` : "No changes." };
-}
-
-const grantSchema = z.object({
-  email: z.email().max(254),
-  role: z.enum(["admin", "analyst"]),
-});
-
-/** Invites a new user (if needed) and grants a role. */
-export async function grantAccess(_prev: ActionResult | null, formData: FormData): Promise<ActionResult> {
-  await requireViewer("admin");
-  const parsed = grantSchema.safeParse({ email: formData.get("email"), role: formData.get("role") });
-  if (!parsed.success) return { ok: false, message: "Enter a valid email and role." };
-  const email = parsed.data.email.toLowerCase();
-
-  let { error } = await rpc("set_user_role", { p_email: email, p_role: parsed.data.role });
-  let invited = false;
-  if (error && /Invite the user first/i.test(error.message)) {
-    if (!hasAdminCredentials()) {
-      return { ok: false, message: "That user does not exist yet, and SUPABASE_SECRET_KEY is not configured to send invitations. Create the user in Supabase first." };
-    }
-    const admin = createAdminClient();
-    const { error: inviteError } = await admin.auth.admin.inviteUserByEmail(email, {
-      redirectTo: `${siteUrl()}/auth/callback?next=/account/password`,
-    });
-    if (inviteError) return { ok: false, message: `Invitation failed: ${inviteError.message}` };
-    invited = true;
-    ({ error } = await rpc("set_user_role", { p_email: email, p_role: parsed.data.role }));
-  }
-  if (error) return { ok: false, message: error.message };
-  refresh();
-  return { ok: true, message: invited ? `Invitation sent to ${email} with the ${parsed.data.role} role.` : `${email} now has the ${parsed.data.role} role.` };
-}
-
-const userIdSchema = z.uuid();
-
-export async function revokeAccess(userId: string): Promise<ActionResult> {
-  const viewer = await requireViewer("admin");
-  const parsed = userIdSchema.safeParse(userId);
-  if (!parsed.success) return { ok: false, message: "Invalid user." };
-  if (parsed.data === viewer.userId) return { ok: false, message: "You cannot revoke your own access." };
-  const { error } = await rpc("revoke_user_role", { p_user_id: parsed.data });
-  if (error) return { ok: false, message: error.message };
-  refresh();
-  return { ok: true, message: "Access revoked." };
-}
-
-export async function changeRole(email: string, role: "admin" | "analyst"): Promise<ActionResult> {
-  await requireViewer("admin");
-  const parsed = grantSchema.safeParse({ email, role });
-  if (!parsed.success) return { ok: false, message: "Invalid input." };
-  const { error } = await rpc("set_user_role", { p_email: parsed.data.email, p_role: parsed.data.role });
-  if (error) return { ok: false, message: error.message };
-  refresh();
-  return { ok: true, message: `Role updated to ${role}.` };
 }

@@ -10,7 +10,7 @@ import { EmptyState } from "@/components/dashboard/states";
 import { TrendChart } from "@/components/charts/trend-chart";
 import { BarListChart } from "@/components/charts/bar-list-chart";
 import { STATUS_COLORS, projectColor } from "@/components/charts/colors";
-import { requireViewer } from "@/lib/auth/dal";
+import { requirePermission } from "@/lib/auth/dal";
 import { getBacklog, getGroupedMetrics, getVolumeSeries, resolveFilterContext } from "@/lib/analytics/queries";
 import { pivotSeries } from "@/lib/analytics/shape";
 import { metricsTable } from "@/lib/analytics/tables";
@@ -34,7 +34,7 @@ export default function ProjectDetailPage({ params, searchParams }: PageProps<"/
 }
 
 async function ProjectDetail({ params, searchParams }: { params: Promise<{ code: string }>; searchParams: Promise<SearchParamsRecord> }) {
-  await requireViewer();
+  await requirePermission("page.projects");
   const [{ code }, sp] = await Promise.all([params, searchParams]);
   const ctx = await resolveFilterContext(sp);
   const project = ctx.options.projects.find((p) => p.code === code);

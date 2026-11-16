@@ -6,7 +6,7 @@ import { ArrowLeft } from "lucide-react";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { PageSkeleton } from "@/components/dashboard/states";
 import { JobMonitor } from "@/components/settings/job-monitor";
-import { requireViewer } from "@/lib/auth/dal";
+import { requirePermission } from "@/lib/auth/dal";
 import { getImportJob, getImportJobIssues } from "@/lib/analytics/queries";
 
 export const metadata: Metadata = { title: "Import" };
@@ -28,7 +28,7 @@ export default function ImportJobPage({ params }: PageProps<"/settings/imports/j
 }
 
 async function JobContent({ params }: { params: Promise<{ id: string }> }) {
-  await requireViewer("admin");
+  await requirePermission("imports.manage");
   const { id } = await params;
   if (!/^[0-9a-f-]{36}$/i.test(id)) notFound();
   const [detail, issues] = await Promise.all([getImportJob(id), getImportJobIssues(id)]);

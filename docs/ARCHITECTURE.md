@@ -31,8 +31,10 @@
 
 **Three layers of access control.**
 1. `src/proxy.ts` refreshes the Supabase session and redirects anonymous requests to `/login` (API routes get 401).
-2. The data access layer (`src/lib/auth/dal.ts`) verifies the JWT with `getClaims()` and loads the role; every page, server action and route handler calls it.
-3. PostgreSQL enforces everything again: RLS on every table, column-level grants that hide free text from direct reads, and every RPC function starts with `private.require_role(...)`. Anonymous users have no table or function privileges at all.
+2. The data access layer (`src/lib/auth/dal.ts`) verifies the JWT with `getClaims()` and loads the role, its effective permissions and the account's project access (`get_my_access`). Every page calls `requirePermission('page.…')`, every server action and route handler checks the permission it needs, and the sidebar, settings tabs, export menu and buttons only render what the role grants.
+3. PostgreSQL enforces everything again: RLS on every table (scoped to the account's projects), column-level grants that hide free text from direct reads, and every RPC function starts with `private.require_role(...)` or `private.require_permission(...)`. Project access is applied in `private.scope_projects()`, which every analytics function uses. Anonymous users have no table or function privileges at all.
+
+**Roles and permissions.** Administrators create named roles in Settings › Roles & access and tick their permissions from a fixed catalog (`src/lib/auth/permissions.ts`, mirrored by `private.permission_catalog()`): one per page, plus reading message text, ticket-row and aggregated exports, imports, projects & cycles, categories, thresholds & preferences, and the audit log. Each account has one role and either all projects or selected programs (including future intakes) and projects. Managing accounts and roles stays with the built-in Administrator role, so nobody can grant themselves more access. Project and import management only apply to accounts with access to all projects, because they act across projects and cycles.
 
 **Server-only data access.** The browser never creates a Supabase client; the publishable key is only used server-side. The secret key is optional and used only to send invitations, after an admin check.
 

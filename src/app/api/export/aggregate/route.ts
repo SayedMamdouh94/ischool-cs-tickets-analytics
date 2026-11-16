@@ -1,5 +1,5 @@
 import { type NextRequest } from "next/server";
-import { checkViewer } from "@/lib/auth/dal";
+import { checkPermission } from "@/lib/auth/dal";
 import { createClient } from "@/lib/supabase/server";
 import {
   getBacklog,
@@ -93,7 +93,7 @@ const DATASETS: Record<string, (f: RpcFilters) => Promise<TableData>> = {
 };
 
 export async function GET(request: NextRequest) {
-  const access = await checkViewer("analyst");
+  const access = await checkPermission("export.aggregate");
   if (!access.ok) return Response.json({ error: "Not authorized" }, { status: access.status });
 
   const params = request.nextUrl.searchParams;

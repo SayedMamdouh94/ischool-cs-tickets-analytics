@@ -11,7 +11,7 @@ import { BarListChart } from "@/components/charts/bar-list-chart";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { requireViewer } from "@/lib/auth/dal";
+import { requirePermission } from "@/lib/auth/dal";
 import { getCrossTab, getDataQuality, getImportRuns, resolveFilterContext } from "@/lib/analytics/queries";
 import { toRpcScope, type SearchParamsRecord } from "@/lib/filters/schema";
 import { RESPONSE_KIND_LABELS, fmtCalendarDate, fmtDateTime, fmtInt, fmtPct, ratio } from "@/lib/format";
@@ -68,7 +68,7 @@ export default function DataQualityPage({ searchParams }: PageProps<"/data-quali
 }
 
 async function DataQualityContent({ searchParams }: { searchParams: Promise<SearchParamsRecord> }) {
-  await requireViewer();
+  await requirePermission("page.data_quality");
   const ctx = await resolveFilterContext(await searchParams);
   const scope = toRpcScope(ctx.filters);
   const [dq, runs, statusByProject] = await Promise.all([getDataQuality(ctx.rpc), getImportRuns(100), getCrossTab(scope, "status", "project")]);

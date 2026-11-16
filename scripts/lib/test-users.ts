@@ -12,8 +12,18 @@ export const TEST_DOMAIN = "cs-analytics-smoke.invalid";
 export interface TestUser {
   email: string;
   password: string;
-  role: "admin" | "analyst" | null;
+  /** Role code (public.app_roles) or null for an account without access. */
+  role: string | null;
   id: string;
+}
+
+/** A temporary account restricted to some programs/projects (otherwise: all projects). */
+export interface TestUserSpec {
+  role: string;
+  /** Distinguishes several accounts with the same role in the email address. */
+  tag: string;
+  programs?: string[];
+  projects?: string[];
 }
 
 export function randomPassword(): string {
@@ -25,14 +35,14 @@ export function adminApi(url: string, secret: string): SupabaseClient {
   return createClient(url, secret, { auth: { persistSession: false, autoRefreshToken: false } });
 }
 
-export async function createTestUsers(db: Db, admin: SupabaseClient, roles: ("admin" | "analyst" | null)[], label: string): Promise<TestUser[]> {
+export async function createTestUsers(db: Db, admin: SupabaseClient, roles: (string | null | TestUserSpec)[], label: string): Promise<TestUser[]> {
   const stamp = `${Date.now()}`;
-  const users: TestUser[] = roles.map((role) => ({
-    email: `${label}-${role ?? "norole"}-${stamp}@${TEST_DOMAIN}`,
-    password: randomPassword(),
-    role,
-    id: "",
-  }));
+  const specs = roles.map((r) => (r && typeof r === "object" ? r : null));
+  const users: TestUser[] = roles.map((r) => {
+    const role = r && typeof r === "object" ? r.role : r;
+    const tag = r && typeof r === "object" ? r.tag : (role ?? "norole");
+    return { email: `${label}-${tag}-${stamp}@${TEST_DOMAIN}`, password: randomPassword(), role, id: "" };
+  });
   for (const u of users) {
     const { data, error } = await admin.auth.admin.createUser({
       email: u.email,
@@ -43,11 +53,26 @@ export async function createTestUsers(db: Db, admin: SupabaseClient, roles: ("ad
     if (error) throw new Error(`could not create temporary user: ${error.message}`);
     u.id = data.user.id;
   }
-  const grants = users.filter((u) => u.role).map((u) => ({ user_id: u.id, role: u.role }));
+  const grants = users
+    .map((u, i) => ({ user_id: u.id, role: u.role, all_projects: !specs[i]?.programs?.length && !specs[i]?.projects?.length }))
+    .filter((g) => g.role);
   if (grants.length) {
     await db.script(`
-insert into public.user_roles (user_id, role)
-select user_id, role from jsonb_to_recordset(${jsonLiteral(grants)}) as g(user_id uuid, role text);`);
+insert into public.user_roles (user_id, role, all_projects)
+select user_id, role, all_projects from jsonb_to_recordset(${jsonLiteral(grants)}) as g(user_id uuid, role text, all_projects boolean);`);
+  }
+  const programs = users.flatMap((u, i) => (specs[i]?.programs ?? []).map((program) => ({ user_id: u.id, program })));
+  if (programs.length) {
+    await db.script(`
+insert into public.user_program_access (user_id, program)
+select user_id, program from jsonb_to_recordset(${jsonLiteral(programs)}) as g(user_id uuid, program text);`);
+  }
+  const projects = users.flatMap((u, i) => (specs[i]?.projects ?? []).map((code) => ({ user_id: u.id, code })));
+  if (projects.length) {
+    await db.script(`
+insert into public.user_project_access (user_id, project_id)
+select g.user_id, p.id from jsonb_to_recordset(${jsonLiteral(projects)}) as g(user_id uuid, code text)
+join public.projects p on p.code = g.code;`);
   }
   return users;
 }

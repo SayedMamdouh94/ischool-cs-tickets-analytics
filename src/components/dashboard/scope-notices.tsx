@@ -1,18 +1,27 @@
 import Link from "next/link";
-import { History, Loader2, TriangleAlert } from "lucide-react";
+import { History, Loader2, LockKeyhole, TriangleAlert } from "lucide-react";
 import type { FilterOptions } from "@/lib/analytics/types";
 import { fmtInt } from "@/lib/format";
 
 /** Explicit context lines about WHAT data the page shows (never shown silently). */
-export function ScopeNotices({ options, isAdmin }: { options: FilterOptions; isAdmin: boolean }) {
+/** `restrictedTo`: the account's project access when it does not cover all projects. */
+export function ScopeNotices({ options, canManageProjects, restrictedTo }: { options: FilterOptions; canManageProjects: boolean; restrictedTo?: string | null }) {
   const notes: React.ReactNode[] = [];
   const scope = options.scope;
+
+  if (restrictedTo) {
+    notes.push(
+      <Note key="restricted" tone="hist" icon={LockKeyhole}>
+        Your account sees only these projects: <strong>{restrictedTo}</strong>. Totals and charts cover them alone.
+      </Note>,
+    );
+  }
 
   if (!scope) {
     notes.push(
       <Note key="none" tone="warn" icon={TriangleAlert}>
         No reporting cycle is selected as current, so there is nothing to show.{" "}
-        {isAdmin ? (
+        {canManageProjects ? (
           <Link href="/settings?tab=projects" className="font-medium underline underline-offset-2">
             Choose a current cycle
           </Link>

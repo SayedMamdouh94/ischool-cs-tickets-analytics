@@ -33,6 +33,10 @@ const APP_TABLES = [
   "import_job_rows",
   "import_job_issues",
   "import_job_events",
+  // Added by 20261116120000_roles_and_permissions.sql
+  "app_roles",
+  "user_program_access",
+  "user_project_access",
 ];
 const IDENT = /^[a-z_][a-z0-9_]*$/;
 

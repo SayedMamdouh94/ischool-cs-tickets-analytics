@@ -13,7 +13,7 @@ import { BarListChart } from "@/components/charts/bar-list-chart";
 import { ColumnChart } from "@/components/charts/column-chart";
 import { INTAKE_GROUP_COLORS, PROGRAM_COLORS, SERIES_COLORS, projectColor } from "@/components/charts/colors";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { requireViewer } from "@/lib/auth/dal";
+import { requirePermission } from "@/lib/auth/dal";
 import { getCrossTab, getGroupedMetrics, getVolumeSeries, resolveFilterContext } from "@/lib/analytics/queries";
 import { pivotSeries } from "@/lib/analytics/shape";
 import { metricsTable } from "@/lib/analytics/tables";
@@ -48,7 +48,7 @@ function colorFor(by: CompareBy, key: string, i: number): string {
 }
 
 async function ProjectsContent({ searchParams }: { searchParams: Promise<SearchParamsRecord> }) {
-  await requireViewer();
+  await requirePermission("page.projects");
   const sp = await searchParams;
   const ctx = await resolveFilterContext(sp);
   const by = pickParam(sp, "by", COMPARE_BY, "project");

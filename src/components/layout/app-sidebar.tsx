@@ -16,12 +16,14 @@ import {
   SidebarMenuItem,
   SidebarRail,
 } from "@/components/ui/sidebar";
-import { BRAND_ICON as Brand, NAV_SECTIONS, filterQuery } from "./nav-items";
+import { Skeleton } from "@/components/ui/skeleton";
+import { usePermissions } from "@/components/auth/permissions-provider";
+import { BRAND_ICON as Brand, filterQuery, navSectionsFor } from "./nav-items";
 
-function Nav({ query, pathname }: { query: string; pathname: string | null }) {
+function Nav({ query, pathname, permissions }: { query: string; pathname: string | null; permissions: readonly string[] }) {
   return (
     <>
-      {NAV_SECTIONS.map((section) => (
+      {navSectionsFor(permissions).map((section) => (
         <SidebarGroup key={section.label}>
           <SidebarGroupLabel>{section.label}</SidebarGroupLabel>
           <SidebarGroupContent>
@@ -48,11 +50,32 @@ function Nav({ query, pathname }: { query: string; pathname: string | null }) {
 }
 
 function NavWithFilters() {
+  const permissions = usePermissions();
   const params = useSearchParams();
   const pathname = usePathname();
-  return <Nav query={filterQuery(params)} pathname={pathname} />;
+  return <Nav query={filterQuery(params)} pathname={pathname} permissions={permissions} />;
 }
 
+/** Placeholder rows while the viewer's permissions load (fixed widths: no hydration mismatch). */
+function NavSkeleton() {
+  return (
+    <SidebarGroup>
+      <SidebarMenu>
+        {["70%", "55%", "80%", "60%", "75%", "50%"].map((w, i) => (
+          <SidebarMenuItem key={i} className="flex h-8 items-center gap-2 px-2">
+            <Skeleton className="size-4 rounded-md" />
+            <Skeleton className="h-4" style={{ width: w }} />
+          </SidebarMenuItem>
+        ))}
+      </SidebarMenu>
+    </SidebarGroup>
+  );
+}
+
+/**
+ * Navigation shows only the pages the account's role grants. Each page enforces
+ * its permission again on the server (requirePermission).
+ */
 export function AppSidebar() {
   return (
     <Sidebar collapsible="icon" variant="inset">
@@ -60,7 +83,7 @@ export function AppSidebar() {
         <SidebarMenu>
           <SidebarMenuItem>
             <SidebarMenuButton size="lg" asChild>
-              <Link href="/overview">
+              <Link href="/">
                 <div className="flex aspect-square size-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
                   <Brand className="size-4" aria-hidden />
                 </div>
@@ -74,7 +97,7 @@ export function AppSidebar() {
         </SidebarMenu>
       </SidebarHeader>
       <SidebarContent>
-        <Suspense fallback={<Nav query="" pathname={null} />}>
+        <Suspense fallback={<NavSkeleton />}>
           <NavWithFilters />
         </Suspense>
       </SidebarContent>

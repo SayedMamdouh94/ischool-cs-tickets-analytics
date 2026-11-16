@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { Suspense } from "react";
 import { usePathname, useSearchParams } from "next/navigation";
 import { Download } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
@@ -10,6 +11,7 @@ import { hrefWithFilters, type DashboardFilters } from "@/lib/filters/schema";
 import { toCsv, type TableData } from "@/lib/table-data";
 import { triggerDownload } from "@/lib/chart-export";
 import { recordAggregateExport } from "@/lib/analytics/export-actions";
+import { IfCanExport } from "./chart-card";
 
 /** Sortable comparison table with a color key per row and optional drill-down links. */
 export function ComparisonTable({
@@ -31,17 +33,21 @@ export function ComparisonTable({
     <Card className="gap-0 py-0 shadow-xs">
       <CardContent className="p-0">
         <div className="flex items-center justify-end border-b px-3 py-1.5" data-print-hide>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-7 text-xs"
-            onClick={() => {
-              triggerDownload(new Blob([toCsv(table)], { type: "text/csv;charset=utf-8" }), `${exportName}.csv`);
-              void recordAggregateExport({ kind: exportName, rows: table.rows.length, path: `${pathname}?${params.toString()}` });
-            }}
-          >
-            <Download className="size-3.5" /> CSV
-          </Button>
+          <Suspense fallback={null}>
+            <IfCanExport>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 text-xs"
+                onClick={() => {
+                  triggerDownload(new Blob([toCsv(table)], { type: "text/csv;charset=utf-8" }), `${exportName}.csv`);
+                  void recordAggregateExport({ kind: exportName, rows: table.rows.length, path: `${pathname}?${params.toString()}` });
+                }}
+              >
+                <Download className="size-3.5" /> CSV
+              </Button>
+            </IfCanExport>
+          </Suspense>
         </div>
         <DataTable
           table={table}

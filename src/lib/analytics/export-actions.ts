@@ -1,7 +1,7 @@
 "use server";
 
 import { z } from "zod";
-import { requireViewer } from "@/lib/auth/dal";
+import { requirePermission } from "@/lib/auth/dal";
 import { createClient } from "@/lib/supabase/server";
 import { callRpc } from "@/lib/supabase/rpc";
 
@@ -13,7 +13,7 @@ const schema = z.object({
 
 /** Audits a client-side download of aggregated data (no ticket-level content). */
 export async function recordAggregateExport(input: { kind: string; rows: number; path: string }): Promise<void> {
-  await requireViewer("analyst");
+  await requirePermission("export.aggregate");
   const parsed = schema.safeParse(input);
   if (!parsed.success) return;
   const supabase = await createClient();

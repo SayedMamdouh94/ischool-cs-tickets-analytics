@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useActionState, useState, useTransition } from "react";
 import { Archive, ChevronDown, FolderPlus, History, Loader2, MoreHorizontal, Pencil, Plus, RotateCcw, Star, Upload } from "lucide-react";
+import { can } from "@/lib/auth/permissions";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -64,7 +65,21 @@ export function suggestCode(name: string): string {
   return c;
 }
 
-export function ProjectsPanel({ cycles, projects, isAdmin }: { cycles: ReportingCycle[]; projects: SettingsProject[]; isAdmin: boolean }) {
+/** What the viewer's role allows here (the server actions and PostgreSQL check again). */
+interface Caps {
+  manage: boolean;
+  import: boolean;
+  viewProject: boolean;
+  viewOverview: boolean;
+}
+
+export function ProjectsPanel({ cycles, projects, permissions }: { cycles: ReportingCycle[]; projects: SettingsProject[]; permissions: readonly string[] }) {
+  const caps: Caps = {
+    manage: can(permissions, "projects.manage"),
+    import: can(permissions, "imports.manage"),
+    viewProject: can(permissions, "page.projects"),
+    viewOverview: can(permissions, "page.overview"),
+  };
   const current = cycles.find((c) => c.is_current) ?? null;
   const activeCycles = cycles.filter((c) => c.status === "active");
   const archivedCycles = cycles.filter((c) => c.status === "archived");
@@ -82,7 +97,7 @@ export function ProjectsPanel({ cycles, projects, isAdmin }: { cycles: Reporting
               The dashboard shows the current cycle by default. Archived cycles stay available as history but are never combined with it.
             </CardDescription>
           </div>
-          {isAdmin && (
+          {caps.manage && (
             <div className="flex flex-wrap gap-2">
               <CreateCycleDialog />
               {activeCycles.length > 1 && <ChangeCurrentDialog cycles={activeCycles} current={current} />}
@@ -117,10 +132,10 @@ export function ProjectsPanel({ cycles, projects, isAdmin }: { cycles: Reporting
               Each project maps one Organization_ID to an intake. Create a project, then import its export in the Imports tab.
             </CardDescription>
           </div>
-          {isAdmin && <ProjectDialog mode="create" cycles={activeCycles} programs={programs} defaultCycle={current?.code} />}
+          {caps.manage && <ProjectDialog mode="create" cycles={activeCycles} programs={programs} defaultCycle={current?.code} />}
         </CardHeader>
         <CardContent className="px-0 sm:px-6">
-          <ProjectTable projects={live} isAdmin={isAdmin} cycles={activeCycles} programs={programs} />
+          <ProjectTable projects={live} caps={caps} cycles={activeCycles} programs={programs} />
         </CardContent>
       </Card>
 
@@ -168,12 +183,14 @@ export function ProjectsPanel({ cycles, projects, isAdmin }: { cycles: Reporting
                             <TableCell className="tabular text-right">{c.projects}</TableCell>
                             <TableCell className="text-right">
                               <div className="flex justify-end gap-1">
-                                <Button asChild variant="ghost" size="sm" className="h-7">
-                                  <Link href={`/overview?cycle=${c.code}`}>
-                                    <History /> View
-                                  </Link>
-                                </Button>
-                                {isAdmin && <RestoreCycleButton cycle={c} />}
+                                {caps.viewOverview && (
+                                  <Button asChild variant="ghost" size="sm" className="h-7">
+                                    <Link href={`/overview?cycle=${c.code}`}>
+                                      <History /> View
+                                    </Link>
+                                  </Button>
+                                )}
+                                {caps.manage && <RestoreCycleButton cycle={c} />}
                               </div>
                             </TableCell>
                           </TableRow>
@@ -182,7 +199,7 @@ export function ProjectsPanel({ cycles, projects, isAdmin }: { cycles: Reporting
                     </Table>
                   </div>
                 )}
-                {archived.length > 0 && <ProjectTable projects={archived} isAdmin={isAdmin} cycles={activeCycles} programs={programs} archivedView />}
+                {archived.length > 0 && <ProjectTable projects={archived} caps={caps} cycles={activeCycles} programs={programs} archivedView />}
               </CardContent>
             </CollapsibleContent>
           </Card>
@@ -194,13 +211,13 @@ export function ProjectsPanel({ cycles, projects, isAdmin }: { cycles: Reporting
 
 function ProjectTable({
   projects,
-  isAdmin,
+  caps,
   cycles,
   programs,
   archivedView = false,
 }: {
   projects: SettingsProject[];
-  isAdmin: boolean;
+  caps: Caps;
   cycles: ReportingCycle[];
   programs: string[];
   archivedView?: boolean;
@@ -247,15 +264,18 @@ function ProjectTable({
               <TableCell>
                 <div className="flex flex-col items-start gap-1">
                   <LifecycleBadge status={p.status === "active" && p.cycle_status === "archived" ? "archived" : p.status} />
-                  {p.active_job && (
-                    <Link href={`/settings/imports/jobs/${p.active_job.id}`} className="text-[11px] text-primary hover:underline">
-                      Import {p.active_job.status.replace(/_/g, " ")}
-                    </Link>
-                  )}
+                  {p.active_job &&
+                    (caps.import ? (
+                      <Link href={`/settings/imports/jobs/${p.active_job.id}`} className="text-[11px] text-primary hover:underline">
+                        Import {p.active_job.status.replace(/_/g, " ")}
+                      </Link>
+                    ) : (
+                      <span className="text-[11px] text-muted-foreground">Import {p.active_job.status.replace(/_/g, " ")}</span>
+                    ))}
                 </div>
               </TableCell>
               <TableCell className="text-right">
-                <ProjectActions project={p} isAdmin={isAdmin} cycles={cycles} programs={programs} archivedView={archivedView} />
+                <ProjectActions project={p} caps={caps} cycles={cycles} programs={programs} archivedView={archivedView} />
               </TableCell>
             </TableRow>
           ))}
@@ -267,13 +287,13 @@ function ProjectTable({
 
 function ProjectActions({
   project,
-  isAdmin,
+  caps,
   cycles,
   programs,
   archivedView,
 }: {
   project: SettingsProject;
-  isAdmin: boolean;
+  caps: Caps;
   cycles: ReportingCycle[];
   programs: string[];
   archivedView: boolean;
@@ -292,33 +312,41 @@ function ProjectActions({
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
-          <DropdownMenuItem asChild>
-            <Link href={viewHref}>
-              <History /> View analytics
-            </Link>
-          </DropdownMenuItem>
+          {caps.viewProject && (
+            <DropdownMenuItem asChild>
+              <Link href={viewHref}>
+                <History /> View analytics
+              </Link>
+            </DropdownMenuItem>
+          )}
           <DropdownMenuItem asChild>
             <Link href={history}>
               <History /> Import history ({project.imports})
             </Link>
           </DropdownMenuItem>
-          {isAdmin && !archivedView && project.status === "active" && (
+          {(caps.import || caps.manage) && !archivedView && project.status === "active" && (
             <>
               <DropdownMenuSeparator />
-              <DropdownMenuItem asChild>
-                <Link href={`/settings?tab=imports&project=${project.code}`}>
-                  <Upload /> Import data
-                </Link>
-              </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => setEditOpen(true)}>
-                <Pencil /> Edit details
-              </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => setArchiveOpen(true)} className="text-destructive">
-                <Archive /> Archive…
-              </DropdownMenuItem>
+              {caps.import && (
+                <DropdownMenuItem asChild>
+                  <Link href={`/settings?tab=imports&project=${project.code}`}>
+                    <Upload /> Import data
+                  </Link>
+                </DropdownMenuItem>
+              )}
+              {caps.manage && (
+                <>
+                  <DropdownMenuItem onSelect={() => setEditOpen(true)}>
+                    <Pencil /> Edit details
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => setArchiveOpen(true)} className="text-destructive">
+                    <Archive /> Archive…
+                  </DropdownMenuItem>
+                </>
+              )}
             </>
           )}
-          {isAdmin && project.status === "archived" && project.cycle_status === "active" && (
+          {caps.manage && project.status === "archived" && project.cycle_status === "active" && (
             <>
               <DropdownMenuSeparator />
               <DropdownMenuItem onSelect={() => setRestoreOpen(true)}>
@@ -328,7 +356,7 @@ function ProjectActions({
           )}
         </DropdownMenuContent>
       </DropdownMenu>
-      {isAdmin && (
+      {caps.manage && (
         <>
           <ProjectDialog mode="edit" project={project} cycles={cycles} programs={programs} open={editOpen} onOpenChange={setEditOpen} />
           <ArchiveProjectDialog project={project} open={archiveOpen} onOpenChange={setArchiveOpen} />

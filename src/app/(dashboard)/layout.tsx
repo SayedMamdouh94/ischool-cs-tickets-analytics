@@ -1,5 +1,6 @@
 import { Suspense } from "react";
 import { AppSidebar } from "@/components/layout/app-sidebar";
+import { PermissionsProvider } from "@/components/auth/permissions-provider";
 import { FilterTransitionProvider } from "@/components/filters/filter-transition";
 import { DataFreshness } from "@/components/layout/data-freshness";
 import { ThemeToggle } from "@/components/layout/theme-toggle";
@@ -7,9 +8,14 @@ import { UserMenu } from "@/components/layout/user-menu";
 import { Separator } from "@/components/ui/separator";
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { Skeleton } from "@/components/ui/skeleton";
+import { getViewer } from "@/lib/auth/dal";
 
 export default function DashboardLayout({ children }: LayoutProps<"/">) {
+  // Not awaited: streams to the sidebar and chart download buttons (what is shown).
+  // Each page checks its own permission on the server.
+  const permissions = getViewer().then((v) => v?.permissions ?? []);
   return (
+    <PermissionsProvider permissions={permissions}>
     <SidebarProvider>
       <AppSidebar />
       <SidebarInset className="min-w-0">
@@ -34,5 +40,6 @@ export default function DashboardLayout({ children }: LayoutProps<"/">) {
         </div>
       </SidebarInset>
     </SidebarProvider>
+    </PermissionsProvider>
   );
 }

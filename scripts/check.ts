@@ -92,8 +92,8 @@ async function main(): Promise<number> {
     `);
     const unpinned = fns.filter((f) => !(f.config ?? []).some((c) => c.startsWith("search_path="))).map((f) => f.proname);
     ok("public functions pin search_path", unpinned.length === 0, unpinned.length === 0 ? `${fns.length} functions` : unpinned.join(", "));
-    const unguarded = fns.filter((f) => f.proname !== "get_my_access" && !/require_(role|service_role)\(/.test(f.src)).map((f) => f.proname);
-    ok("public functions enforce an application role", unguarded.length === 0, unguarded.length === 0 ? "all guarded" : unguarded.join(", "));
+    const unguarded = fns.filter((f) => f.proname !== "get_my_access" && !/require_(role|permission|service_role)\(/.test(f.src)).map((f) => f.proname);
+    ok("public functions enforce an application role or permission", unguarded.length === 0, unguarded.length === 0 ? "all guarded" : unguarded.join(", "));
 
     // Import worker functions: service role only (never callable by signed-in users).
     const workerFns = await db.query<{ proname: string; auth_exec: boolean }>(`

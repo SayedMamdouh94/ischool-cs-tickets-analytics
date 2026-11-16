@@ -72,7 +72,7 @@ export async function updatePassword(_prev: AuthFormState, formData: FormData): 
   if (!data?.claims?.sub) return { error: "Your session has expired. Use the link from your email again." };
   const { error } = await supabase.auth.updateUser({ password: parsed.data.password });
   if (error) return { error: error.message };
-  redirect("/overview");
+  redirect("/");
 }
 
 export async function signOut(): Promise<void> {

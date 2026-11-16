@@ -2,7 +2,7 @@
 
 import { refresh } from "next/cache";
 import { z } from "zod";
-import { requireViewer } from "@/lib/auth/dal";
+import { requirePermission } from "@/lib/auth/dal";
 import { createClient } from "@/lib/supabase/server";
 import { callRpc } from "@/lib/supabase/rpc";
 import { createAdminClient, hasAdminCredentials } from "@/lib/supabase/admin";
@@ -68,7 +68,7 @@ export type StartImportInput = z.input<typeof startSchema>;
 export async function startImport(
   input: StartImportInput,
 ): Promise<ImportActionResult<{ jobId: string; signedUrl: string; contentType: string }>> {
-  await requireViewer("admin");
+  await requirePermission("imports.manage");
   const parsed = startSchema.safeParse(input);
   if (!parsed.success) {
     const first = parsed.error.issues[0];
@@ -100,7 +100,7 @@ const jobId = z.uuid();
 
 /** Called by the browser after the upload finished: queues validation. */
 export async function completeUpload(id: string): Promise<ImportActionResult> {
-  await requireViewer("admin");
+  await requirePermission("imports.manage");
   if (!jobId.safeParse(id).success) return { ok: false, message: "Invalid import." };
   const { error } = await rpc("mark_import_uploaded", { p_job_id: id });
   if (error) return { ok: false, message: error.message };
@@ -117,7 +117,7 @@ const confirmSchema = z.object({
 });
 
 export async function confirmImport(input: z.input<typeof confirmSchema>): Promise<ImportActionResult<{ previewChanged?: boolean }>> {
-  await requireViewer("admin");
+  await requirePermission("imports.manage");
   const parsed = confirmSchema.safeParse(input);
   if (!parsed.success) return { ok: false, message: "Invalid confirmation." };
   const { data: detail, error: detailError } = await rpc<ImportJobDetail | null>("get_import_job", { p_job_id: parsed.data.id });
@@ -144,7 +144,7 @@ export async function confirmImport(input: z.input<typeof confirmSchema>): Promi
 }
 
 export async function cancelImport(id: string): Promise<ImportActionResult> {
-  await requireViewer("admin");
+  await requirePermission("imports.manage");
   if (!jobId.safeParse(id).success) return { ok: false, message: "Invalid import." };
   const { error } = await rpc("cancel_import_job", { p_job_id: id });
   if (error) return { ok: false, message: error.message };
@@ -153,7 +153,7 @@ export async function cancelImport(id: string): Promise<ImportActionResult> {
 }
 
 export async function retryImport(id: string): Promise<ImportActionResult> {
-  await requireViewer("admin");
+  await requirePermission("imports.manage");
   if (!jobId.safeParse(id).success) return { ok: false, message: "Invalid import." };
   const { error } = await rpc("retry_import_job", { p_job_id: id });
   if (error) return { ok: false, message: error.message };
@@ -163,7 +163,7 @@ export async function retryImport(id: string): Promise<ImportActionResult> {
 }
 
 export async function refreshPreview(id: string): Promise<ImportActionResult> {
-  await requireViewer("admin");
+  await requirePermission("imports.manage");
   if (!jobId.safeParse(id).success) return { ok: false, message: "Invalid import." };
   const { error } = await rpc("refresh_import_preview", { p_job_id: id });
   if (error) return { ok: false, message: error.message };

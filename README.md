@@ -36,7 +36,7 @@ supabase db reset              # applies all migrations
 npm run db:import              # idempotent import of all files in data/raw
 npm run db:validate            # reconcile every row against the source files
 npm run db:check               # security + health checks
-npm run dev:users              # LOCAL ONLY: admin@local.test / analyst@local.test
+npm run dev:users              # LOCAL ONLY: admin@ / analyst@ / lead@local.test (Support Lead, DECI only)
 npm run dev                    # http://localhost:3000
 ```
 
@@ -63,7 +63,7 @@ NEXT_PUBLIC_SITE_URL=http://localhost:3000
 | `npm run db:validate` | Reconcile database vs. original files (counts, hashes, statuses, missing values, anomalies, durations) |
 | `npm run db:check` | Migrations, RLS, anon lockdown, column privileges, reference data, import status |
 | `npm run db:reclassify` | Recompute rule-based issue themes after rule changes |
-| `npm run admin:grant -- --email <e> [--role admin\|analyst] [--invite] [--revoke]` | Grant/revoke application roles |
+| `npm run admin:grant -- --email <e> [--role <role code>] [--invite] [--revoke]` | Grant/revoke application roles (custom roles and project access: Settings › Roles & access) |
 | `npm run db:types` | Regenerate `src/types/database.ts` from the local schema |
 | `npm run db:preflight` | Read-only inventory of a target database before migrating |
 | `npm run auth:config [-- --apply]` | Check/apply production Auth settings (site URL, redirects, invite-only) |
@@ -77,7 +77,7 @@ Without `DATABASE_URL`, the database scripts use a **passwordless** transport: `
 ## Access model
 
 - Public sign-up is disabled; there is no public page with data.
-- Users need an **application role** (`user_roles`) to see anything: **admin** (everything, including message text, exports, settings, access, imports, projects, cycles and mappings) or **analyst** (aggregates and ticket metadata, read-only settings and import history; no message text, notes, attachments, uploads or ticket-level exports). Enforced in PostgreSQL, not only in the UI.
+- Users need an **application role** to see anything. Built in: **Administrator** (everything, including user and role management) and **Analyst** (every page, aggregates and ticket metadata, aggregated CSVs; no message text, ticket-row exports or changes). Administrators create further roles in **Settings › Roles & access** by ticking permissions (pages, message text, exports, imports, projects, categories, settings, audit log) and limit each account to all projects or selected programs/projects. The sidebar and buttons show only what the role grants; permissions and project access are enforced in PostgreSQL, not only in the UI.
 - Uploaded files are in a private bucket; staged rows are unreachable by any client role; worker functions are service-role only.
 - Viewing ticket content, exports, imports, project/cycle lifecycle changes, mappings and settings changes are written to an audit log.
 

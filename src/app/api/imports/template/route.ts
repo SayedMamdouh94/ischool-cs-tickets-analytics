@@ -1,5 +1,5 @@
 import { type NextRequest } from "next/server";
-import { checkViewer } from "@/lib/auth/dal";
+import { checkPermission } from "@/lib/auth/dal";
 import { createClient } from "@/lib/supabase/server";
 import { callRpc } from "@/lib/supabase/rpc";
 import { buildCsvTemplate, buildXlsxTemplate } from "@/lib/imports/template";
@@ -11,8 +11,8 @@ import type { Settings, StatusValue, TopicMappings } from "@/lib/analytics/types
  * project details on the Instructions sheet). Administrators only.
  */
 export async function GET(request: NextRequest) {
-  const access = await checkViewer("admin");
-  if (!access.ok) return Response.json({ error: "Administrator role required" }, { status: access.status });
+  const access = await checkPermission("imports.manage");
+  if (!access.ok) return Response.json({ error: "The Run imports permission is required" }, { status: access.status });
 
   const params = request.nextUrl.searchParams;
   const format = params.get("format") === "csv" ? "csv" : "xlsx";

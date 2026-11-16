@@ -18,6 +18,19 @@ export type Database = {
                   Relationships: [
                     
                   ]
+                },"app_roles": {
+                  Row: {
+                    "code": string,"created_at": string,"created_by": string | null,"description": string | null,"is_system": boolean,"name": string,"permissions": (string)[],"updated_at": string
+                  }
+                  Insert: {
+                    "code": string,"created_at"?: string,"created_by"?: string | null,"description"?: string | null,"is_system"?: boolean,"name": string,"permissions"?: (string)[],"updated_at"?: string
+                  }
+                  Update: {
+                    "code"?: string,"created_at"?: string,"created_by"?: string | null,"description"?: string | null,"is_system"?: boolean,"name"?: string,"permissions"?: (string)[],"updated_at"?: string
+                  }
+                  Relationships: [
+                    
+                  ]
                 },"app_settings": {
                   Row: {
                     "key": string,"updated_at": string,"updated_by": string | null,"value": NonNullable<Json>
@@ -122,13 +135,13 @@ isOneToOne: false
                   ]
                 },"import_jobs": {
                   Row: {
-                    "archive_cycle_id": string | null,"archive_project_id": string | null,"archive_scope": string | null,"attempts": number,"cancelled_at": string | null,"cancelled_by": string | null,"completed_at": string | null,"confirmed_at": string | null,"confirmed_by": string | null,"created_at": string,"created_by": string | null,"data_as_of": string | null,"declared_size_bytes": number,"error_code": string | null,"file_format": string,"file_hash": string | null,"file_size_bytes": number | null,"heartbeat_at": string | null,"id": string,"import_run_id": string | null,"invalid_row_policy": string | null,"last_error": string | null,"last_kick_at": string | null,"lease_expires_at": string | null,"lease_owner": string | null,"max_attempts": number,"max_created_at": string | null,"min_created_at": string | null,"mode": string,"new_cycle": Json | null,"new_cycle_id": string | null,"new_project": Json | null,"original_filename": string,"preview": Json | null,"preview_computed_at": string | null,"preview_version": number,"progress_done": number,"progress_phase": string | null,"progress_total": number,"project_id": string | null,"rows_applied": number,"rows_invalid": number | null,"rows_staged": number,"rows_to_apply": number | null,"rows_total": number | null,"rows_valid": number | null,"status": string,"storage_path": string,"updated_at": string,"uploaded_at": string | null,"validation_summary": NonNullable<Json>,"warnings_count": number | null
+                    "archive_cycle_id": string | null,"archive_project_id": string | null,"archive_scope": string | null,"attempts": number,"cancelled_at": string | null,"cancelled_by": string | null,"completed_at": string | null,"confirmed_at": string | null,"confirmed_by": string | null,"created_at": string,"created_by": string | null,"data_as_of": string | null,"declared_size_bytes": number,"error_code": string | null,"file_format": string,"file_hash": string | null,"file_size_bytes": number | null,"heartbeat_at": string | null,"id": string,"import_run_id": string | null,"invalid_row_policy": string | null,"last_error": string | null,"last_kick_at": string | null,"lease_expires_at": string | null,"lease_owner": string | null,"max_attempts": number,"max_created_at": string | null,"min_created_at": string | null,"mode": string,"new_cycle": Json | null,"new_cycle_id": string | null,"new_project": Json | null,"original_filename": string,"preview": Json | null,"preview_basis": string | null,"preview_computed_at": string | null,"preview_version": number,"progress_done": number,"progress_phase": string | null,"progress_total": number,"project_id": string | null,"rows_applied": number,"rows_invalid": number | null,"rows_staged": number,"rows_to_apply": number | null,"rows_total": number | null,"rows_valid": number | null,"status": string,"storage_path": string,"updated_at": string,"uploaded_at": string | null,"validation_summary": NonNullable<Json>,"warnings_count": number | null
                   }
                   Insert: {
-                    "archive_cycle_id"?: string | null,"archive_project_id"?: string | null,"archive_scope"?: string | null,"attempts"?: number,"cancelled_at"?: string | null,"cancelled_by"?: string | null,"completed_at"?: string | null,"confirmed_at"?: string | null,"confirmed_by"?: string | null,"created_at"?: string,"created_by"?: string | null,"data_as_of"?: string | null,"declared_size_bytes": number,"error_code"?: string | null,"file_format": string,"file_hash"?: string | null,"file_size_bytes"?: number | null,"heartbeat_at"?: string | null,"id"?: string,"import_run_id"?: string | null,"invalid_row_policy"?: string | null,"last_error"?: string | null,"last_kick_at"?: string | null,"lease_expires_at"?: string | null,"lease_owner"?: string | null,"max_attempts"?: number,"max_created_at"?: string | null,"min_created_at"?: string | null,"mode": string,"new_cycle"?: Json | null,"new_cycle_id"?: string | null,"new_project"?: Json | null,"original_filename": string,"preview"?: Json | null,"preview_computed_at"?: string | null,"preview_version"?: number,"progress_done"?: number,"progress_phase"?: string | null,"progress_total"?: number,"project_id"?: string | null,"rows_applied"?: number,"rows_invalid"?: number | null,"rows_staged"?: number,"rows_to_apply"?: number | null,"rows_total"?: number | null,"rows_valid"?: number | null,"status"?: string,"storage_path": string,"updated_at"?: string,"uploaded_at"?: string | null,"validation_summary"?: NonNullable<Json>,"warnings_count"?: number | null
+                    "archive_cycle_id"?: string | null,"archive_project_id"?: string | null,"archive_scope"?: string | null,"attempts"?: number,"cancelled_at"?: string | null,"cancelled_by"?: string | null,"completed_at"?: string | null,"confirmed_at"?: string | null,"confirmed_by"?: string | null,"created_at"?: string,"created_by"?: string | null,"data_as_of"?: string | null,"declared_size_bytes": number,"error_code"?: string | null,"file_format": string,"file_hash"?: string | null,"file_size_bytes"?: number | null,"heartbeat_at"?: string | null,"id"?: string,"import_run_id"?: string | null,"invalid_row_policy"?: string | null,"last_error"?: string | null,"last_kick_at"?: string | null,"lease_expires_at"?: string | null,"lease_owner"?: string | null,"max_attempts"?: number,"max_created_at"?: string | null,"min_created_at"?: string | null,"mode": string,"new_cycle"?: Json | null,"new_cycle_id"?: string | null,"new_project"?: Json | null,"original_filename": string,"preview"?: Json | null,"preview_basis"?: string | null,"preview_computed_at"?: string | null,"preview_version"?: number,"progress_done"?: number,"progress_phase"?: string | null,"progress_total"?: number,"project_id"?: string | null,"rows_applied"?: number,"rows_invalid"?: number | null,"rows_staged"?: number,"rows_to_apply"?: number | null,"rows_total"?: number | null,"rows_valid"?: number | null,"status"?: string,"storage_path": string,"updated_at"?: string,"uploaded_at"?: string | null,"validation_summary"?: NonNullable<Json>,"warnings_count"?: number | null
                   }
                   Update: {
-                    "archive_cycle_id"?: string | null,"archive_project_id"?: string | null,"archive_scope"?: string | null,"attempts"?: number,"cancelled_at"?: string | null,"cancelled_by"?: string | null,"completed_at"?: string | null,"confirmed_at"?: string | null,"confirmed_by"?: string | null,"created_at"?: string,"created_by"?: string | null,"data_as_of"?: string | null,"declared_size_bytes"?: number,"error_code"?: string | null,"file_format"?: string,"file_hash"?: string | null,"file_size_bytes"?: number | null,"heartbeat_at"?: string | null,"id"?: string,"import_run_id"?: string | null,"invalid_row_policy"?: string | null,"last_error"?: string | null,"last_kick_at"?: string | null,"lease_expires_at"?: string | null,"lease_owner"?: string | null,"max_attempts"?: number,"max_created_at"?: string | null,"min_created_at"?: string | null,"mode"?: string,"new_cycle"?: Json | null,"new_cycle_id"?: string | null,"new_project"?: Json | null,"original_filename"?: string,"preview"?: Json | null,"preview_computed_at"?: string | null,"preview_version"?: number,"progress_done"?: number,"progress_phase"?: string | null,"progress_total"?: number,"project_id"?: string | null,"rows_applied"?: number,"rows_invalid"?: number | null,"rows_staged"?: number,"rows_to_apply"?: number | null,"rows_total"?: number | null,"rows_valid"?: number | null,"status"?: string,"storage_path"?: string,"updated_at"?: string,"uploaded_at"?: string | null,"validation_summary"?: NonNullable<Json>,"warnings_count"?: number | null
+                    "archive_cycle_id"?: string | null,"archive_project_id"?: string | null,"archive_scope"?: string | null,"attempts"?: number,"cancelled_at"?: string | null,"cancelled_by"?: string | null,"completed_at"?: string | null,"confirmed_at"?: string | null,"confirmed_by"?: string | null,"created_at"?: string,"created_by"?: string | null,"data_as_of"?: string | null,"declared_size_bytes"?: number,"error_code"?: string | null,"file_format"?: string,"file_hash"?: string | null,"file_size_bytes"?: number | null,"heartbeat_at"?: string | null,"id"?: string,"import_run_id"?: string | null,"invalid_row_policy"?: string | null,"last_error"?: string | null,"last_kick_at"?: string | null,"lease_expires_at"?: string | null,"lease_owner"?: string | null,"max_attempts"?: number,"max_created_at"?: string | null,"min_created_at"?: string | null,"mode"?: string,"new_cycle"?: Json | null,"new_cycle_id"?: string | null,"new_project"?: Json | null,"original_filename"?: string,"preview"?: Json | null,"preview_basis"?: string | null,"preview_computed_at"?: string | null,"preview_version"?: number,"progress_done"?: number,"progress_phase"?: string | null,"progress_total"?: number,"project_id"?: string | null,"rows_applied"?: number,"rows_invalid"?: number | null,"rows_staged"?: number,"rows_to_apply"?: number | null,"rows_total"?: number | null,"rows_valid"?: number | null,"status"?: string,"storage_path"?: string,"updated_at"?: string,"uploaded_at"?: string | null,"validation_summary"?: NonNullable<Json>,"warnings_count"?: number | null
                   }
                   Relationships: [
                     {
@@ -390,18 +403,68 @@ isOneToOne: false
       referencedColumns: ["id"]
     }
                   ]
-                },"user_roles": {
+                },"user_program_access": {
                   Row: {
-                    "created_at": string,"granted_by": string | null,"role": string,"updated_at": string,"user_id": string
+                    "created_at": string,"granted_by": string | null,"program": string,"user_id": string
                   }
                   Insert: {
-                    "created_at"?: string,"granted_by"?: string | null,"role": string,"updated_at"?: string,"user_id": string
+                    "created_at"?: string,"granted_by"?: string | null,"program": string,"user_id": string
                   }
                   Update: {
-                    "created_at"?: string,"granted_by"?: string | null,"role"?: string,"updated_at"?: string,"user_id"?: string
+                    "created_at"?: string,"granted_by"?: string | null,"program"?: string,"user_id"?: string
                   }
                   Relationships: [
-                    
+                    {
+      foreignKeyName: "user_program_access_user_id_fkey"
+      columns: ["user_id"]
+isOneToOne: false
+      referencedRelation: "user_roles"
+      referencedColumns: ["user_id"]
+    }
+                  ]
+                },"user_project_access": {
+                  Row: {
+                    "created_at": string,"granted_by": string | null,"project_id": string,"user_id": string
+                  }
+                  Insert: {
+                    "created_at"?: string,"granted_by"?: string | null,"project_id": string,"user_id": string
+                  }
+                  Update: {
+                    "created_at"?: string,"granted_by"?: string | null,"project_id"?: string,"user_id"?: string
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "user_project_access_project_id_fkey"
+      columns: ["project_id"]
+isOneToOne: false
+      referencedRelation: "projects"
+      referencedColumns: ["id"]
+    },{
+      foreignKeyName: "user_project_access_user_id_fkey"
+      columns: ["user_id"]
+isOneToOne: false
+      referencedRelation: "user_roles"
+      referencedColumns: ["user_id"]
+    }
+                  ]
+                },"user_roles": {
+                  Row: {
+                    "all_projects": boolean,"created_at": string,"granted_by": string | null,"role": string,"updated_at": string,"user_id": string
+                  }
+                  Insert: {
+                    "all_projects"?: boolean,"created_at"?: string,"granted_by"?: string | null,"role": string,"updated_at"?: string,"user_id": string
+                  }
+                  Update: {
+                    "all_projects"?: boolean,"created_at"?: string,"granted_by"?: string | null,"role"?: string,"updated_at"?: string,"user_id"?: string
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "user_roles_role_fkey"
+      columns: ["role"]
+isOneToOne: false
+      referencedRelation: "app_roles"
+      referencedColumns: ["code"]
+    }
                   ]
                 }
           }
@@ -429,6 +492,9 @@ isOneToOne: false
                            },
 "create_reporting_cycle":
 { Args: { "p_cycle": Json,"p_make_current"?: boolean }; Returns: Json
+                           },
+"delete_app_role":
+{ Args: { "p_code": string }; Returns: Json
                            },
 "export_tickets_page":
 { Args: { "p_after_pk"?: number,"p_filters"?: Json,"p_include_text"?: boolean,"p_limit"?: number }; Returns: Json
@@ -502,6 +568,9 @@ isOneToOne: false
 "get_weekday_hour":
 { Args: { "p_filters"?: Json }; Returns: Json
                            },
+"list_app_roles":
+{ Args: Record<PropertyKey, never>; Returns: Json
+                           },
 "list_app_users":
 { Args: Record<PropertyKey, never>; Returns: Json
                            },
@@ -538,6 +607,9 @@ isOneToOne: false
 "set_topic_category":
 { Args: { "p_category_code": string,"p_topic": string }; Returns: Json
                            },
+"set_user_access":
+{ Args: { "p_all_projects"?: boolean,"p_email": string,"p_programs"?: (string)[],"p_project_codes"?: (string)[],"p_role": string }; Returns: Json
+                           },
 "set_user_role":
 { Args: { "p_email": string,"p_role": string }; Returns: Json
                            },
@@ -556,6 +628,9 @@ isOneToOne: false
 "update_threshold":
 { Args: { "p_key": string,"p_value_hours": number }; Returns: Json
                            },
+"upsert_app_role":
+{ Args: { "p_code": string,"p_description": string,"p_is_new"?: boolean,"p_name": string,"p_permissions": (string)[] }; Returns: Json
+                           },
 "upsert_category":
 { Args: { "p_code": string,"p_description"?: string,"p_is_active"?: boolean,"p_name_ar"?: string,"p_name_en": string }; Returns: Json
                            },
@@ -573,6 +648,9 @@ isOneToOne: false
                            },
 "worker_heartbeat":
 { Args: { "p_done": number,"p_job_id": string,"p_phase": string,"p_total": number,"p_worker": string }; Returns: boolean
+                           },
+"worker_release":
+{ Args: { "p_job_id": string,"p_worker": string }; Returns: boolean
                            },
 "worker_set_file":
 { Args: { "p_hash": string,"p_job_id": string,"p_rows_total": number,"p_size": number,"p_worker": string }; Returns: boolean

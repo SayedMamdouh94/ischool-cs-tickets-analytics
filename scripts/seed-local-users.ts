@@ -1,6 +1,7 @@
 /**
- * LOCAL DEVELOPMENT ONLY: creates an admin and an analyst user in the local
- * Supabase stack (`supabase start`) so the dashboard can be used immediately.
+ * LOCAL DEVELOPMENT ONLY: creates an admin, an analyst and a "Support Lead"
+ * (custom role, DECI program only) in the local Supabase stack
+ * (`supabase start`) so the dashboard and its permissions can be tried at once.
  * Refuses to run against any non-local Supabase URL.
  *
  *   npm run dev:users
@@ -9,10 +10,19 @@ import { createClient } from "@supabase/supabase-js";
 import { connect } from "./lib/db";
 import { requireEnv } from "./lib/env";
 
-export const LOCAL_USERS = [
+/** Demo custom role: a few pages plus message text, no exports or settings. */
+const SUPPORT_LEAD = {
+  code: "support_lead",
+  name: "Support Lead",
+  description: "Demo role: overview, trends, topics, Ticket Explorer with message text. No exports or settings.",
+  permissions: ["page.overview", "page.trends", "page.topics", "page.tickets", "tickets.read_content"],
+};
+
+export const LOCAL_USERS: { email: string; password: string; role: string; programs?: string[] }[] = [
   { email: "admin@local.test", password: "LocalAdmin#2026", role: "admin" },
   { email: "analyst@local.test", password: "LocalAnalyst#2026", role: "analyst" },
-] as const;
+  { email: "lead@local.test", password: "LocalLead#2026", role: SUPPORT_LEAD.code, programs: ["DECI"] },
+];
 
 async function main(): Promise<number> {
   const url = requireEnv("NEXT_PUBLIC_SUPABASE_URL");
@@ -30,6 +40,11 @@ async function main(): Promise<number> {
       console.error("Refusing to seed users: DATABASE_URL is not local.");
       return 1;
     }
+    await sql`
+      insert into public.app_roles (code, name, description, permissions)
+      values (${SUPPORT_LEAD.code}, ${SUPPORT_LEAD.name}, ${SUPPORT_LEAD.description}, ${SUPPORT_LEAD.permissions})
+      on conflict (code) do nothing
+    `;
     for (const u of LOCAL_USERS) {
       let [existing] = await sql<{ id: string }[]>`select id from auth.users where email = ${u.email}`;
       if (!existing) {
@@ -37,11 +52,16 @@ async function main(): Promise<number> {
         if (error) throw error;
         existing = { id: data.user.id };
       }
+      const allProjects = !u.programs?.length;
       await sql`
-        insert into public.user_roles (user_id, role) values (${existing.id}, ${u.role})
-        on conflict (user_id) do update set role = excluded.role
+        insert into public.user_roles (user_id, role, all_projects) values (${existing.id}, ${u.role}, ${allProjects})
+        on conflict (user_id) do update set role = excluded.role, all_projects = excluded.all_projects
       `;
-      console.log(`✓ ${u.email} (${u.role}) — password: ${u.password}`);
+      await sql`delete from public.user_program_access where user_id = ${existing.id}`;
+      for (const program of u.programs ?? []) {
+        await sql`insert into public.user_program_access (user_id, program) values (${existing.id}, ${program})`;
+      }
+      console.log(`✓ ${u.email} (${u.role}${allProjects ? "" : `, ${u.programs!.join(", ")} only`}) — password: ${u.password}`);
     }
     return 0;
   } finally {

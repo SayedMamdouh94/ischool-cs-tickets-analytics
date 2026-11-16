@@ -61,7 +61,7 @@ export async function proxy(request: NextRequest) {
   }
 
   if (isAuthenticated && pathname === "/login") {
-    return NextResponse.redirect(new URL("/overview", request.url));
+    return NextResponse.redirect(new URL("/", request.url));
   }
 
   response.headers.set("Cache-Control", "private, no-store");

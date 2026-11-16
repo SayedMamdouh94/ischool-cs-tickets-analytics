@@ -16,7 +16,7 @@ const ERRORS: Record<string, string> = {
 
 export function LoginForm() {
   const params = useSearchParams();
-  const next = params.get("next") ?? "/overview";
+  const next = params.get("next") ?? "/";
   const urlError = ERRORS[params.get("error") ?? ""];
   const [mode, setMode] = useState<"signin" | "reset">("signin");
   const [state, action, pending] = useActionState<AuthFormState, FormData>(signIn, {});

@@ -8,7 +8,7 @@ import { DataTable } from "@/components/dashboard/data-table";
 import { KpiCard } from "@/components/dashboard/kpi-card";
 import { PageSkeleton } from "@/components/dashboard/states";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { requireViewer } from "@/lib/auth/dal";
+import { requirePermission } from "@/lib/auth/dal";
 import { getImportRunDetail } from "@/lib/analytics/queries";
 import { fmtDateTime, fmtInt } from "@/lib/format";
 
@@ -28,7 +28,7 @@ export default function ImportRunPage({ params }: PageProps<"/settings/imports/[
 }
 
 async function ImportRunContent({ params }: { params: Promise<{ id: string }> }) {
-  await requireViewer();
+  await requirePermission("page.settings");
   const { id } = await params;
   if (!/^[0-9a-f-]{36}$/i.test(id)) notFound();
   const detail = await getImportRunDetail(id);

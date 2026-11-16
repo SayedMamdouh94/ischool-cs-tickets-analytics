@@ -7,7 +7,7 @@ import { PageHeader } from "@/components/dashboard/page-header";
 import { AmbiguousTicketChoice, TicketDetailView } from "@/components/tickets/ticket-detail";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { requireViewer } from "@/lib/auth/dal";
+import { requirePermission } from "@/lib/auth/dal";
 import { getTicketDetail } from "@/lib/analytics/queries";
 
 export const metadata: Metadata = { title: "Ticket" };
@@ -26,7 +26,7 @@ export default function TicketPage({ params, searchParams }: PageProps<"/tickets
 }
 
 async function TicketContent({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<Record<string, string | string[] | undefined>> }) {
-  await requireViewer();
+  await requirePermission("page.tickets");
   const [{ id }, sp] = await Promise.all([params, searchParams]);
   if (!/^\d{1,18}$/.test(id)) notFound();
   const project = typeof sp.project === "string" && /^[A-Z][A-Z0-9_]{1,39}$/.test(sp.project) ? sp.project : null;

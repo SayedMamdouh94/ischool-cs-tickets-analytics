@@ -3,11 +3,13 @@
  *
  *   ENV_FILE=.env.cloud npm run web:smoke [-- --url https://...]
  *
- * Temporary admin / analyst / no-role accounts (random in-memory passwords,
+ * Temporary admin / analyst / no-role accounts and a temporary custom role
+ * limited to the DECI program (random in-memory passwords; accounts and role
  * removed afterwards) sign in through @supabase/ssr's own cookie encoding;
  * every dashboard page is then rendered server-side by the deployed app and
  * checked for HTTP status, real data, absence of error boundaries, filter and
- * export behaviour, role restrictions, security headers and leaked secrets.
+ * export behaviour, role, permission and project-scope restrictions, security
+ * headers and leaked secrets.
  */
 import { parseArgs } from "node:util";
 import { createServerClient } from "@supabase/ssr";
@@ -43,7 +45,7 @@ async function get(site: string, path: string, cookie?: string): Promise<{ statu
 
 /** Expected figures for the dashboard's default scope: active projects of the current reporting cycle. */
 async function expected(db: Db) {
-  const [row] = await db.query<{ total: number; sept: number; deci_summer: number; demi3: number; sample: number; cycle: string }>(
+  const [row] = await db.query<{ total: number; sept: number; deci_summer: number; demi3: number; deci: number; sample: number; demi_sample: number; cycle: string }>(
     `with s as (
        select t.* from public.tickets t
        join public.projects p on p.id = t.project_id and p.status = 'active'
@@ -53,12 +55,25 @@ async function expected(db: Db) {
             (select count(*)::int from s where created_date between '2026-09-01' and '2026-09-30') as sept,
             (select count(*)::int from s join public.projects p on p.id = s.project_id where p.code = 'DECI_SUMMER') as deci_summer,
             (select count(*)::int from s join public.projects p on p.id = s.project_id where p.code = 'DEMI_3RD') as demi3,
+            (select count(*)::int from s join public.projects p on p.id = s.project_id where p.program = 'DECI') as deci,
+            (select s.ticket_id::bigint from s join public.projects p on p.id = s.project_id where p.program = 'DEMI'
+               and (select count(*) from public.tickets t2 where t2.ticket_id = s.ticket_id) = 1
+             order by s.ticket_id limit 1) as demi_sample,
             (select s.ticket_id::bigint from s where s.message is not null
                and (select count(*) from public.tickets t2 where t2.ticket_id = s.ticket_id) = 1
              order by s.ticket_id limit 1) as sample,
             (select name from public.reporting_cycles where is_current) as cycle`,
   );
-  return { total: Number(row.total), sept: Number(row.sept), deciSummer: Number(row.deci_summer), demi3: Number(row.demi3), sample: Number(row.sample), cycle: row.cycle };
+  return {
+    total: Number(row.total),
+    sept: Number(row.sept),
+    deciSummer: Number(row.deci_summer),
+    demi3: Number(row.demi3),
+    deci: Number(row.deci),
+    sample: Number(row.sample),
+    demiSample: Number(row.demi_sample),
+    cycle: row.cycle,
+  };
 }
 
 async function main(): Promise<number> {
@@ -72,9 +87,12 @@ async function main(): Promise<number> {
   const db = connectDb();
   console.log(`Live smoke test of ${site}\n`);
   let users: TestUser[] = [];
+  // Temporary custom role: two pages, no exports, no settings.
+  const tempRole = `websmoke_${Date.now()}`;
 
   try {
     await sweepStaleTestUsers(db, admin);
+    await db.query("delete from public.app_roles r where r.code like 'websmoke\\_%' and not exists (select 1 from public.user_roles u where u.role = r.code)");
     const exp = await expected(db);
 
     // ---- Anonymous ------------------------------------------------------------------
@@ -98,8 +116,12 @@ async function main(): Promise<number> {
     check("client bundle free of secrets", leaked === 0 && chunks.length > 0, `${chunks.length} chunks scanned, ${leaked} with secrets`);
 
     // ---- Signed-in users ---------------------------------------------------------------
-    users = await createTestUsers(db, admin, ["admin", "analyst", null], "websmoke");
-    const [adminCookie, analystCookie, noneCookie] = await Promise.all(users.map((u) => sessionCookie(url, key, u)));
+    await db.query("insert into public.app_roles (code, name, description, permissions) select $1, $1, 'temporary web smoke test role', array(select jsonb_array_elements_text($2::jsonb))", [
+      tempRole,
+      ["page.overview", "page.tickets"],
+    ]);
+    users = await createTestUsers(db, admin, ["admin", "analyst", null, { role: tempRole, tag: "deci", programs: ["DECI"] }], "websmoke");
+    const [adminCookie, analystCookie, noneCookie, deciCookie] = await Promise.all(users.map((u) => sessionCookie(url, key, u)));
 
     const pages: [string, string[]][] = [
       ["/overview", ["Executive Overview", fmt(exp.total), exp.cycle]],
@@ -139,7 +161,8 @@ async function main(): Promise<number> {
     const detailAnalyst = await get(site, `/tickets/${exp.sample}`, analystCookie);
     check("analyst: ticket detail hides content", detailAnalyst.status === 200 && detailAnalyst.text.includes("Message content hidden") && !detailAnalyst.text.includes(">Student message<"), String(detailAnalyst.status));
     const analystSettings = await get(site, "/settings", analystCookie);
-    check("analyst: settings are read-only", analystSettings.text.includes("settings are read-only") && !analystSettings.text.includes("Create project"));
+    check("analyst: settings are read-only", analystSettings.text.includes("can view these settings but not change them") && !analystSettings.text.includes("Create project"));
+    check("analyst: no Roles & access or Audit log tabs", !analystSettings.text.includes("Roles &amp; access") && !analystSettings.text.includes("Audit log"));
     const analystImports = await get(site, "/settings?tab=imports", analystCookie);
     check("analyst: no upload controls", analystImports.status === 200 && !analystImports.text.includes("Upload &amp; validate"), String(analystImports.status));
 
@@ -175,6 +198,27 @@ async function main(): Promise<number> {
     check("no role: redirected to /no-access, no data", noAccess && !noneOverview.text.includes(fmt(exp.total)), `${noneOverview.status}`);
     const noneAgg = await fetch(`${site}/api/export/aggregate?dataset=projects`, { headers: { cookie: noneCookie } });
     check("no role: aggregate export blocked (403)", noneAgg.status === 403, String(noneAgg.status));
+
+    // Custom role (Executive Overview + Ticket Explorer), DECI program only
+    const deciHome = await get(site, "/", deciCookie);
+    check("custom role: / lands on its first allowed page", [302, 303, 307, 308].includes(deciHome.status) && (deciHome.location ?? "").endsWith("/overview"), `${deciHome.status} → ${deciHome.location}`);
+    const deciOverview = await get(site, "/overview", deciCookie);
+    check("custom role: overview totals cover DECI only", deciOverview.status === 200 && deciOverview.text.includes(`>${fmt(exp.deci)}<`) && !deciOverview.text.includes(`>${fmt(exp.total)}<`), `expected ${fmt(exp.deci)}`);
+    check("custom role: restricted-scope notice shown", deciOverview.text.includes("Your account sees only these projects"));
+    const nav = (t: string, href: string) => new RegExp(`href="${href}(\\?[^"]*)?"[^>]*>(<[^>]+>)*<span>`).test(t);
+    check("custom role: sidebar shows granted pages only", nav(deciOverview.text, "/tickets") && !nav(deciOverview.text, "/trends") && !nav(deciOverview.text, "/settings"));
+    check("custom role: no export menu", !deciOverview.text.includes("Exports respect the active filters") && !/>\s*Export\s*</.test(deciOverview.text));
+    for (const path of ["/trends", "/settings", "/reports/summary"]) {
+      const r = await get(site, path, deciCookie);
+      const blocked = (r.location ?? "").includes("/no-access") || r.text.includes("/no-access?reason=permission");
+      check(`custom role: ${path} blocked`, blocked && !r.text.includes(fmt(exp.total)), `${r.status} ${r.location ?? ""}`);
+    }
+    const deciAgg = await fetch(`${site}/api/export/aggregate?dataset=projects`, { headers: { cookie: deciCookie } });
+    check("custom role: aggregate export blocked (403)", deciAgg.status === 403, String(deciAgg.status));
+    const deciTickets = await get(site, "/tickets", deciCookie);
+    check("custom role: explorer lists DECI tickets only", deciTickets.text.includes(`of ${fmt(exp.deci)} tickets`), `expected of ${fmt(exp.deci)}`);
+    const deciOther = await get(site, `/tickets/${exp.demiSample}`, deciCookie);
+    check("custom role: another program's ticket is not shown", !deciOther.text.includes(`#${exp.demiSample}`) || deciOther.text.includes("not available to your account"), String(deciOther.status));
   } catch (err) {
     check("web smoke test completed", false, (err as Error).message);
   } finally {
@@ -182,6 +226,8 @@ async function main(): Promise<number> {
       const { leftover } = await removeTestUsers(db, admin, users).catch(() => ({ leftover: -1 }));
       check("cleanup: temporary accounts removed", leftover === 0, `${leftover} left`);
     }
+    const removed = await db.query("delete from public.app_roles where code = $1 returning code", [tempRole]).catch(() => null);
+    check("cleanup: temporary role removed", removed !== null, removed === null ? "failed" : "ok");
     await db.end();
   }
 

@@ -3,10 +3,11 @@
  *
  *   ENV_FILE=.env.cloud npm run db:smoke
  *
- * Creates temporary admin / analyst / no-role accounts (random in-memory
- * passwords, reserved .invalid domain), verifies anonymous lockdown, disabled
- * sign-up, rejection of the local demo credentials, RLS and role checks,
- * per-project counts and audit logging, then removes the temporary accounts.
+ * Creates temporary admin / analyst / no-role / DECI-only accounts (random
+ * in-memory passwords, reserved .invalid domain), verifies anonymous lockdown,
+ * disabled sign-up, rejection of the local demo credentials, RLS, permission
+ * and project-scope checks, per-project counts and audit logging, then removes
+ * the temporary accounts.
  * Needs NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY and
  * SUPABASE_SECRET_KEY; database access uses the configured transport.
  */
@@ -47,10 +48,12 @@ async function main(): Promise<number> {
     check("local demo admin credentials rejected", Boolean(demo.error), demo.error?.message ?? "demo login succeeded!");
     const demoAnalyst = await anon.auth.signInWithPassword({ email: "analyst@local.test", password: "LocalAnalyst#2026" });
     check("local demo analyst credentials rejected", Boolean(demoAnalyst.error), demoAnalyst.error?.message ?? "demo login succeeded!");
+    const demoLead = await anon.auth.signInWithPassword({ email: "lead@local.test", password: "LocalLead#2026" });
+    check("local demo lead credentials rejected", Boolean(demoLead.error), demoLead.error?.message ?? "demo login succeeded!");
 
     // ---- Temporary accounts ---------------------------------------------------------
-    users = await createTestUsers(db, admin, ["admin", "analyst", null], "smoke");
-    const [adm, ana, none] = await Promise.all(users.map((u) => signIn(url, key, u)));
+    users = await createTestUsers(db, admin, ["admin", "analyst", null, { role: "analyst", tag: "deci", programs: ["DECI"] }], "smoke");
+    const [adm, ana, none, deci] = await Promise.all(users.map((u) => signIn(url, key, u)));
 
     // ---- No application role ----------------------------------------------------------
     const noneRows = await none.from("tickets").select("ticket_id").limit(5);
@@ -109,6 +112,28 @@ async function main(): Promise<number> {
     check("analyst: import jobs hidden (RLS)", (jobs.data ?? []).length === 0, `${jobs.data?.length ?? 0} rows`);
     const scope = await callRpc<{ cycle: string }[]>(ana, "get_scope_catalog");
     check("analyst: reporting cycles visible", Array.isArray(scope.data) && scope.data.length > 0, scope.error?.message ?? "");
+
+    // ---- Restricted account (analyst role, DECI program only) ---------------------------
+    const deciCodes = Object.keys(BRIEF_EXPECTED_COUNTS).filter((c) => c.startsWith("DECI"));
+    const deciExpected = deciCodes.reduce((a, c) => a + BRIEF_EXPECTED_COUNTS[c], 0);
+    const rm = await callRpc<{ rows: { key: string; tickets: number }[] }>(deci, "get_grouped_metrics", { p_filters: { cycle: "CYCLE_2026", include_archived: true }, p_dimension: "project" });
+    const rKeys = (rm.data?.rows ?? []).map((r) => r.key);
+    const rTotal = (rm.data?.rows ?? []).reduce((a, r) => a + r.tickets, 0);
+    check("restricted (DECI): analytics show DECI projects only", rKeys.length > 0 && rKeys.every((k) => deciCodes.includes(k)), rKeys.join(", "));
+    check(`restricted (DECI): total = ${deciExpected.toLocaleString("en-US")}`, rTotal === deciExpected, String(rTotal));
+    const rProjects = await deci.from("projects").select("code");
+    const rCodes = (rProjects.data ?? []).map((p) => p.code as string);
+    check("restricted (DECI): other projects hidden (RLS)", rCodes.length > 0 && rCodes.every((c) => c.startsWith("DECI")), rCodes.join(", "));
+    const [{ deci_tickets }] = await db.query<{ deci_tickets: number }>(
+      "select count(*)::int as deci_tickets from public.tickets t join public.projects p on p.id = t.project_id where p.program = 'DECI' and p.status <> 'draft'",
+    );
+    const rTickets = await deci.from("tickets").select("ticket_id", { count: "exact", head: true });
+    check("restricted (DECI): ticket rows limited (RLS)", rTickets.count === Number(deci_tickets), `${rTickets.count} of ${deci_tickets}`);
+    const [demi] = await db.query<{ ticket_id: number }>(
+      "select t.ticket_id::bigint as ticket_id from public.tickets t join public.projects p on p.id = t.project_id where p.program = 'DEMI' and p.status = 'active' and (select count(*) from public.tickets t2 where t2.ticket_id = t.ticket_id) = 1 order by t.ticket_id limit 1",
+    );
+    const rDetail = await callRpc(deci, "get_ticket_detail", { p_ticket_id: Number(demi?.ticket_id) });
+    check("restricted (DECI): DEMI ticket detail hidden", rDetail.error === null && rDetail.data === null, rDetail.error?.message ?? (rDetail.data ? "visible!" : ""));
 
     // ---- Administrator -------------------------------------------------------------------
     const adet = await callRpc<{ content_visible: boolean; message: string | null; attachments: unknown[] }>(adm, "get_ticket_detail", { p_ticket_id: someId });

@@ -1,5 +1,6 @@
 /**
- * Grants an application role to a user (provision administrators/analysts).
+ * Grants an application role to a user: admin, analyst or any custom role
+ * created in Settings › Roles & access. Project access is managed in the app.
  *
  *   npm run admin:grant -- --email you@example.com                 # user must already exist
  *   npm run admin:grant -- --email you@example.com --invite        # send a Supabase invitation first
@@ -26,17 +27,20 @@ async function main(): Promise<number> {
   });
   const email = (values.email ?? optionalEnv("ADMIN_EMAIL"))?.trim().toLowerCase();
   if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
-    console.error("Usage: npm run admin:grant -- --email <address> [--role admin|analyst] [--invite] [--revoke]  (or set ADMIN_EMAIL)");
+    console.error("Usage: npm run admin:grant -- --email <address> [--role <role code>] [--invite] [--revoke]  (or set ADMIN_EMAIL)");
     return 1;
   }
-  const role = values.role;
-  if (role !== "admin" && role !== "analyst") {
-    console.error("--role must be 'admin' or 'analyst'.");
-    return 1;
-  }
+  const role = values.role ?? "admin";
 
   const db = connectDb();
   try {
+    if (!values.revoke) {
+      const known = await db.query<{ code: string }>("select code from public.app_roles order by code");
+      if (!known.some((r) => r.code === role)) {
+        console.error(`--role must be one of: ${known.map((r) => r.code).join(", ")}.`);
+        return 1;
+      }
+    }
     let [user] = await db.query<{ id: string }>("select id::text as id from auth.users where lower(email) = $1 and deleted_at is null", [email]);
 
     if (!user && values.invite) {
@@ -70,7 +74,10 @@ async function main(): Promise<number> {
       return 0;
     }
     await db.query(
-      "insert into public.user_roles (user_id, role) values ($1::uuid, $2) on conflict (user_id) do update set role = excluded.role",
+      // Project access is kept, except that administrators always see every project.
+      `insert into public.user_roles (user_id, role) values ($1::uuid, $2)
+       on conflict (user_id) do update set role = excluded.role,
+         all_projects = public.user_roles.all_projects or excluded.role = 'admin'`,
       [user.id, role],
     );
     await db.query("insert into public.audit_events (user_id, action, details) values (null, 'access.role_granted', $1::jsonb)", [

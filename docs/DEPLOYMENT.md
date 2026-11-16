@@ -38,7 +38,7 @@ supabase projects api-keys --project-ref <ref> --reveal -o json   # pipe into th
 | 5. validate | 72 reconciliation checks against the original CSVs, incl. stored-text and timestamp fidelity | read-only |
 | 6. health | RLS, grants, anon lockdown, demo-account check | read-only |
 | 7. administrator | `ADMIN_EMAIL` gets the admin role (invited first if the account doesn't exist) | no change if already admin |
-| 8. permissions | Temporary admin / analyst / no-role accounts exercise RLS and role checks, then are removed | leaves no accounts |
+| 8. permissions | Temporary admin / analyst / no-role / DECI-only accounts exercise RLS, permission and project-scope checks, then are removed | leaves no accounts |
 | 9. live | Signs in temporary accounts against the deployed site and renders every page, filters, exports and restrictions; scans client bundles for secrets | leaves no accounts |
 
 ### Passwordless database transport
@@ -55,7 +55,7 @@ Without `DATABASE_URL`, every CLI script (`db:import`, `db:validate`, `db:check`
 ### Auth email links
 
 - Password recovery started from the login page uses Supabase's default email template with the PKCE flow and lands on `/auth/confirm?code=…`.
-- Invitations (`admin:grant --invite`, Settings → Access) land on `/auth/callback`, which removes the tokens from the address bar and exchanges them server-side (`/auth/session`, same-origin only) for the session cookie.
+- Invitations (`admin:grant --invite`, Settings → Roles & access) land on `/auth/callback`, which removes the tokens from the address bar and exchanges them server-side (`/auth/session`, same-origin only) for the session cookie.
 - Custom templates pointing at `/auth/confirm?token_hash=…&type=…` are also supported.
 
 ### Web imports: background worker configuration
@@ -126,7 +126,7 @@ Or in the Vercel dashboard: **Add New → Project → Import** the GitHub reposi
 | `NEXT_PUBLIC_SUPABASE_URL` | Production, Preview | `https://rpofhzcqcxpuotsebzsq.supabase.co` |
 | `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | Production, Preview | Publishable key (`sb_publishable_…`) from Project Settings → API Keys |
 | `NEXT_PUBLIC_SITE_URL` | Production | `https://<your-app>.vercel.app` |
-| `SUPABASE_SECRET_KEY` | Production only, mark **Sensitive** | Secret key (`sb_secret_…`). Required for web imports (signed upload URLs, background worker) and invitations from Settings → Access |
+| `SUPABASE_SECRET_KEY` | Production only, mark **Sensitive** | Secret key (`sb_secret_…`). Required for web imports (signed upload URLs, background worker) and invitations from Settings → Roles & access |
 | `IMPORT_WORKER_SECRET` | Production only, mark **Sensitive** | Set by `npm run worker:configure -- --vercel` (see above) |
 
 Do **not** add `DATABASE_URL` to Vercel; the web app never connects with privileged credentials.
@@ -159,12 +159,13 @@ Pushing to the default branch also deploys automatically once the repository is 
 4. Sign in as the administrator. Executive Overview shows **12,969** tickets; the header shows "Historical export · data as of …".
 5. Data Quality → File-level reconciliation shows "No issue" for all four files.
 6. Ticket Explorer → open a ticket → message text is visible to the admin; sign in as an analyst and confirm it is hidden.
-7. `ENV_FILE=.env.cloud npm run db:check` → 0 failed (includes "no demo @local.test accounts").
+7. Settings → Roles & access lists existing accounts as Administrator/Analyst with "All projects". Optionally create a role with a few pages, give it to a test account limited to one program, and confirm its sidebar shows only those pages and the project filter only that program.
+8. `ENV_FILE=.env.cloud npm run db:check` → 0 failed (includes "no demo @local.test accounts").
 
 ## Operations
 
 - **New exports, new projects, archiving:** in the dashboard (Settings & Imports) — see [DATA_IMPORT.md](DATA_IMPORT.md). The CLI `db:import` remains for bulk re-imports.
 - **Schema changes:** add a new migration file (`supabase migration new <name>`), test locally with `supabase db reset` + `npm run test:integration`, then `supabase db push`.
 - **Thresholds and preferences:** Settings (admin).
-- **Access reviews:** Settings → Access and Audit log.
+- **Access reviews:** Settings → Roles & access (roles, their permissions, each account's project access) and the Audit log.
 - **Backups:** Supabase daily backups (and PITR on paid plans) cover the database; the original CSV files should be archived separately in a secure location, not in Git.

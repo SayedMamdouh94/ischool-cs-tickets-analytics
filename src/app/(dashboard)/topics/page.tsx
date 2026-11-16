@@ -13,7 +13,7 @@ import { TrendChart } from "@/components/charts/trend-chart";
 import { ACCENT, SERIES_COLORS } from "@/components/charts/colors";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { requireViewer } from "@/lib/auth/dal";
+import { requirePermission } from "@/lib/auth/dal";
 import { getCrossTab, getGroupedMetrics, getRecurringSessions, getVolumeSeries, resolveFilterContext } from "@/lib/analytics/queries";
 import { pivotSeries } from "@/lib/analytics/shape";
 import { metricsTable } from "@/lib/analytics/tables";
@@ -37,7 +37,7 @@ export default function TopicsPage({ searchParams }: PageProps<"/topics">) {
 }
 
 async function TopicsContent({ searchParams }: { searchParams: Promise<SearchParamsRecord> }) {
-  await requireViewer();
+  await requirePermission("page.topics");
   const ctx = await resolveFilterContext(await searchParams);
   const [overallM, topicsM, byProject, categoriesM, themesM, topicThemes, recurring, lessons, themeTrendSeries] = await Promise.all([
     getGroupedMetrics(ctx.rpc, "none"),

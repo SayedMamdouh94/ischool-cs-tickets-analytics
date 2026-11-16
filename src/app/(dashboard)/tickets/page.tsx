@@ -6,7 +6,7 @@ import { AmbiguousTicketChoice, TicketDetailView } from "@/components/tickets/ti
 import { TicketDrawer } from "@/components/tickets/ticket-drawer";
 import { TicketSearchBox, TicketTable } from "@/components/tickets/ticket-table";
 import { Skeleton } from "@/components/ui/skeleton";
-import { requireViewer } from "@/lib/auth/dal";
+import { requirePermission } from "@/lib/auth/dal";
 import { getTicketDetail, resolveFilterContext, searchTickets } from "@/lib/analytics/queries";
 import type { SearchParamsRecord } from "@/lib/filters/schema";
 import { pickInt, pickParam, pickString } from "@/lib/search-params";
@@ -43,7 +43,7 @@ export default function TicketsPage({ searchParams }: PageProps<"/tickets">) {
 }
 
 async function TicketsContent({ searchParams }: { searchParams: Promise<SearchParamsRecord> }) {
-  const viewer = await requireViewer();
+  const viewer = await requirePermission("page.tickets");
   const sp = await searchParams;
   const ctx = await resolveFilterContext(sp);
   const result = await searchTickets(ctx.rpc, {
@@ -60,7 +60,7 @@ async function TicketsContent({ searchParams }: { searchParams: Promise<SearchPa
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <TicketSearchBox contentSearch={viewer.role === "admin"} />
+        <TicketSearchBox contentSearch={viewer.permissions.includes("tickets.read_content")} />
         {!result.content_search && <p className="text-xs text-muted-foreground">Message text search is available to administrators.</p>}
       </div>
       <TicketTable result={result} />

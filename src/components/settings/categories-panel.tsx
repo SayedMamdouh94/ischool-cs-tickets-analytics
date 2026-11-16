@@ -17,7 +17,7 @@ import { fmtInt } from "@/lib/format";
 
 const UNMAPPED = "__unmapped__";
 
-export function CategoriesPanel({ mappings, statuses, isAdmin }: { mappings: TopicMappings; statuses: StatusValue[]; isAdmin: boolean }) {
+export function CategoriesPanel({ mappings, statuses, canManage }: { mappings: TopicMappings; statuses: StatusValue[]; canManage: boolean }) {
   const [query, setQuery] = useState("");
   const [onlyNew, setOnlyNew] = useState(false);
   const categories = mappings.categories.filter((c) => c.kind === "category" && c.is_active);
@@ -46,7 +46,7 @@ export function CategoriesPanel({ mappings, statuses, isAdmin }: { mappings: Top
               immediately; the original Topic is never changed.
             </CardDescription>
           </div>
-          {isAdmin && <CategoryDialog />}
+          {canManage && <CategoryDialog />}
         </CardHeader>
         <CardContent className="space-y-3 px-0 sm:px-6">
           <div className="flex flex-wrap items-center gap-2 px-6 sm:px-0">
@@ -71,7 +71,7 @@ export function CategoriesPanel({ mappings, statuses, isAdmin }: { mappings: Top
               </TableHeader>
               <TableBody>
                 {topics.map((t) => (
-                  <TopicRow key={t.topic} topic={t} categories={categories} isAdmin={isAdmin} />
+                  <TopicRow key={t.topic} topic={t} categories={categories} canManage={canManage} />
                 ))}
                 {topics.length === 0 && (
                   <TableRow>
@@ -113,7 +113,7 @@ export function CategoriesPanel({ mappings, statuses, isAdmin }: { mappings: Top
               </TableHeader>
               <TableBody>
                 {statuses.map((s) => (
-                  <StatusRow key={s.status} status={s} isAdmin={isAdmin} />
+                  <StatusRow key={s.status} status={s} canManage={canManage} />
                 ))}
               </TableBody>
             </Table>
@@ -124,7 +124,7 @@ export function CategoriesPanel({ mappings, statuses, isAdmin }: { mappings: Top
   );
 }
 
-function TopicRow({ topic, categories, isAdmin }: { topic: TopicMappings["topics"][number]; categories: TopicMappings["categories"]; isAdmin: boolean }) {
+function TopicRow({ topic, categories, canManage }: { topic: TopicMappings["topics"][number]; categories: TopicMappings["categories"]; canManage: boolean }) {
   const [pending, start] = useTransition();
   const value = topic.category ?? UNMAPPED;
   const change = (v: string) =>
@@ -149,7 +149,7 @@ function TopicRow({ topic, categories, isAdmin }: { topic: TopicMappings["topics
       <TableCell className="tabular text-right">{fmtInt(topic.current_cycle_tickets)}</TableCell>
       <TableCell className="text-muted-foreground">{topic.projects.join(", ") || "—"}</TableCell>
       <TableCell>
-        {isAdmin ? (
+        {canManage ? (
           <div className="flex items-center gap-2">
             <Select value={value} onValueChange={change} disabled={pending}>
               <SelectTrigger size="sm" className="h-8 w-full">
@@ -176,7 +176,7 @@ function TopicRow({ topic, categories, isAdmin }: { topic: TopicMappings["topics
   );
 }
 
-function StatusRow({ status, isAdmin }: { status: StatusValue; isAdmin: boolean }) {
+function StatusRow({ status, canManage }: { status: StatusValue; canManage: boolean }) {
   const [pending, start] = useTransition();
   const label = status.status === "__none__" ? "(missing status)" : status.status;
   return (
@@ -191,7 +191,7 @@ function StatusRow({ status, isAdmin }: { status: StatusValue; isAdmin: boolean 
       </TableCell>
       <TableCell className="tabular text-right">{fmtInt(status.tickets)}</TableCell>
       <TableCell>
-        {isAdmin ? (
+        {canManage ? (
           <div className="flex items-center gap-2">
             <Select
               value={status.class ?? ""}

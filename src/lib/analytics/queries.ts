@@ -17,6 +17,7 @@ import {
 import type { ImportIssueRow, ImportJobDetail, ImportJobListItem } from "@/lib/imports/types";
 import type {
   AmbiguousTicket,
+  AppRoleSummary,
   AppUser,
   AuditEvent,
   Backlog,
@@ -148,6 +149,7 @@ export const getDataQuality = (f: RpcFilters) => call<DataQuality>("get_data_qua
 export const getImportRuns = (limit = 50) => call<ImportRun[]>("get_import_runs", { p_limit: limit });
 export const getImportRunDetail = (id: string) => call<ImportRunDetail | null>("get_import_run_detail", { p_run_id: id });
 export const listAppUsers = () => call<AppUser[]>("list_app_users");
+export const listAppRoles = () => call<AppRoleSummary[]>("list_app_roles");
 export const getAuditEvents = (limit = 100) => call<AuditEvent[]>("get_audit_events", { p_limit: limit });
 export const getImportJobs = (limit = 50) => call<ImportJobListItem[]>("get_import_jobs", { p_limit: limit });
 export const getImportJob = (id: string) => call<ImportJobDetail | null>("get_import_job", { p_job_id: id });

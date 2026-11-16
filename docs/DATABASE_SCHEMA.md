@@ -13,6 +13,7 @@ Migrations (apply in order with the Supabase CLI):
 | `20261116090000_cheap_import_confirmation.sql` | Preview fingerprint (`import_jobs.preview_basis`): confirmation recomputes the preview only when the underlying data changed |
 | `20261116090100_worker_statement_timeout.sql` | 55 s statement timeout for the service role (server-side import worker); signed-in users keep 8 s |
 | `20261024090200_admin_and_import_jobs.sql` | Project/cycle/category/status/insight-rule administration, the import-job lifecycle (admin), worker functions (service role), batched SQL applier, pg_cron scheduler + pg_net watchdog |
+| `20261116120000_roles_and_permissions.sql` | Custom roles (`app_roles`) with permission sets, per-account project access (programs and/or projects), permission checks replacing the administrator check, project scope in every analytics function and in RLS, role/access management functions |
 
 ## Tables
 
@@ -61,29 +62,39 @@ Versioned derived classification: `ticket_pk → tickets.id`, `category_id`, `su
 ### `analytics_thresholds`, `app_settings`
 Editable monitoring thresholds (`response_hours`, `resolution_hours`) and preferences (`date_preset_anchor`, `default_date_preset`, `organization_name`).
 
-### `user_roles`, `audit_events`
-`user_roles(user_id → auth.users, role admin|analyst)`; a trigger prevents removing the last administrator. `audit_events` records content views, exports, settings and access changes (identifiers and filters only).
+### `app_roles`, `user_roles`, `user_program_access`, `user_project_access`, `audit_events`
+`app_roles(code, name, description, permissions text[], is_system)`: named roles; `permissions` holds keys from `private.permission_catalog()` (mirrored by `src/lib/auth/permissions.ts`). `admin` is a locked system role that always has every permission; `analyst` is a system role (editable, not deletable) seeded with every page plus aggregated exports. `user_roles(user_id → auth.users, role → app_roles, all_projects)`: one role per account; a trigger prevents removing the last administrator and administrators always have `all_projects`. When `all_projects` is false the account sees only the programs in `user_program_access` (including that program's future projects) and the projects in `user_project_access`. `audit_events` records content views, exports, settings and access changes (identifiers and filters only).
 
 ## Security
 
-| Object | anon | authenticated, no role | analyst | admin |
+Access = **role** (which permissions) × **project access** (which data). Accounts without a role see nothing.
+
+| Object | anon | no role | any role | needs permission |
 | --- | --- | --- | --- | --- |
-| Any table | ✗ | rows hidden by RLS | read (see below) | read |
-| `tickets.message/response/note/attachment_urls` | ✗ | ✗ (column grant) | ✗ (column grant) | via `get_ticket_detail` / export only |
-| `ticket_attachments`, `import_errors.raw_row`, `audit_events`, `ticket_changes`, `import_jobs`, `import_job_issues`, `import_job_events` | ✗ | ✗ | ✗ | ✓ (read) |
+| Projects, tickets, classifications, import runs, cycles (direct reads) | ✗ | rows hidden by RLS | rows of the account's projects only | — |
+| `tickets.message/response/note/attachment_urls` | ✗ | ✗ (column grant) | ✗ (column grant) | `tickets.read_content`: via `get_ticket_detail` / export only |
+| `ticket_attachments`, `ticket_changes` | ✗ | ✗ | ✗ | `tickets.read_content` (own projects) |
+| `import_errors.raw_row`, `import_jobs`, `import_job_issues`, `import_job_events` | ✗ | ✗ | ✗ | `imports.manage` |
+| `audit_events` | ✗ | ✗ | ✗ | `audit.view` |
 | `import_job_rows` (staged rows) | ✗ | ✗ | ✗ | ✗ (no grants; worker only) |
-| Storage bucket `imports` | ✗ | ✗ | ✗ | ✗ (signed upload URL issued after an admin check; service-role worker reads) |
-| Analytics functions, `get_scope_catalog`, `get_topic_mappings`, `get_status_values`, `get_project_history` | ✗ | error 42501 | ✓ | ✓ |
-| `export_tickets_page`, settings, access, project/cycle/category/status/insight-rule changes, import-job functions | ✗ | ✗ | ✗ | ✓ |
+| Storage bucket `imports` | ✗ | ✗ | ✗ | ✗ (signed upload URL issued after an `imports.manage` check; service-role worker reads) |
+| Analytics functions, `get_scope_catalog`, `get_filter_options`, `get_topic_mappings`, `get_status_values`, `get_project_history`, `get_import_runs`, `get_settings` | ✗ | error 42501 | ✓ scoped to the account's projects | — |
+| `search_tickets`, `get_ticket_detail` | ✗ | ✗ | ✗ | `page.tickets` (message text: `tickets.read_content`) |
+| `export_tickets_page` / `record_export` | ✗ | ✗ | ✗ | `export.tickets` (+ `tickets.read_content` with text) / `export.aggregate` |
+| Project/cycle changes · import-job functions | ✗ | ✗ | ✗ | `projects.manage` · `imports.manage` (both only with access to all projects) |
+| Category/status mappings · thresholds, insight rules, preferences | ✗ | ✗ | ✗ | `categories.manage` · `settings.manage` |
+| `list_app_users`, `list_app_roles`, `upsert_app_role`, `delete_app_role`, `set_user_access`, `set_user_role`, `revoke_user_role` | ✗ | ✗ | ✗ | Administrator role only |
 | `worker_*` functions | ✗ | ✗ | ✗ | ✗ (service role only) |
 
-All `public` functions are `SECURITY DEFINER` with `search_path = ''`, fully qualified names, and call `private.require_role()` (or `private.require_service_role()` for worker functions) first; `npm run db:check` verifies this, RLS on every table, and that `anon` has no privileges. Helpers live in the non-exposed `private` schema.
+Project scope is applied once in `private.scope_projects()` (every analytics function goes through it), in the few functions that read projects/tickets/import runs directly, and in RLS via `private.visible_project_ids()`. The `page.*` permissions other than `page.tickets` decide which pages the application serves; the aggregates behind them are shared by several pages, so the database scopes them by project but not by page.
+
+All `public` functions are `SECURITY DEFINER` with `search_path = ''`, fully qualified names, and call `private.require_role()`, `private.require_permission()` (or `private.require_service_role()` for worker functions) first; `npm run db:check` verifies this, RLS on every table, and that `anon` has no privileges. Helpers live in the non-exposed `private` schema.
 
 ## Analytics functions (all return one jsonb value)
 
 | Function | Used by |
 | --- | --- |
-| `get_my_access()` | session role |
+| `get_my_access()` | session role, effective permissions and project access |
 | `get_scope_catalog()` | cycle selector, per-project export dates |
 | `get_filter_options(scope)` | filter bar, resolved scope, coverage per project, imports in progress, unmapped/unclassified counts |
 | `get_grouped_metrics(filters, dimension, limit)` | KPIs and comparisons by none/project/program/intake/intake_group/topic/category/subcategory/responder/resolver/status/response_kind/lesson/month |
@@ -95,10 +106,11 @@ All `public` functions are `SECURITY DEFINER` with `search_path = ''`, fully qua
 | `get_period_comparison(filters, dimension, days)` | period-over-period with per-project windows and exclusions |
 | `get_recurring_sessions(filters, min_students, n)` | recurrence |
 | `search_tickets(filters, search, sort, dir, page, size)` | explorer |
-| `get_ticket_detail(id, project_code)` | drawer / detail page (content for admins, audited; ambiguous IDs return the candidates) |
+| `get_ticket_detail(id, project_code)` | drawer / detail page (content with `tickets.read_content`, audited; ambiguous IDs return the candidates) |
 | `export_tickets_page`, `record_export` | CSV exports |
 | `get_data_quality(filters)`, `get_import_runs`, `get_import_run_detail` | data quality, imports |
-| `get_settings`, `update_threshold`, `update_app_setting`, `update_insight_rule`, `list_app_users`, `set_user_role`, `revoke_user_role`, `get_audit_events` | settings |
+| `get_settings`, `update_threshold`, `update_app_setting`, `update_insight_rule`, `get_audit_events` | settings |
+| `list_app_roles`, `upsert_app_role`, `delete_app_role`, `list_app_users`, `set_user_access`, `set_user_role`, `revoke_user_role` | Roles & access tab (administrators) |
 | `create_reporting_cycle`, `update_reporting_cycle`, `set_current_cycle`, `archive_cycle`, `restore_cycle`, `create_project`, `update_project`, `archive_project`, `restore_project`, `get_project_history` | Projects tab |
 | `get_topic_mappings`, `set_topic_category`, `upsert_category`, `get_status_values`, `set_status_class` | Categories tab |
 | `create_import_job`, `mark_import_uploaded`, `refresh_import_preview`, `confirm_import_job`, `cancel_import_job`, `retry_import_job`, `get_import_jobs`, `get_import_job`, `get_import_job_issues` | Imports tab, job page |

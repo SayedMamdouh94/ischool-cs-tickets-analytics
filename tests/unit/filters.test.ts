@@ -63,11 +63,12 @@ describe("date presets", () => {
 });
 
 describe("post-login redirect", () => {
+  // "/" sends each account to the first page its role may open.
   it("only allows same-origin relative paths", () => {
     expect(safeNext("/tickets?q=1")).toBe("/tickets?q=1");
-    expect(safeNext("https://evil.example")).toBe("/overview");
-    expect(safeNext("//evil.example")).toBe("/overview");
-    expect(safeNext("/\\evil.example")).toBe("/overview");
-    expect(safeNext(undefined)).toBe("/overview");
+    expect(safeNext("https://evil.example")).toBe("/");
+    expect(safeNext("//evil.example")).toBe("/");
+    expect(safeNext("/\\evil.example")).toBe("/");
+    expect(safeNext(undefined)).toBe("/");
   });
 });

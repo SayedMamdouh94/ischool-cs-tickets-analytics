@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { Suspense, useRef, useState } from "react";
 import { usePathname, useSearchParams } from "next/navigation";
 import { Download, ImageDown, Info, Table2, BarChart3 } from "lucide-react";
 import { toast } from "sonner";
@@ -12,6 +12,13 @@ import { downloadElementAsPng, slugify, triggerDownload } from "@/lib/chart-expo
 import { toCsv, type TableData } from "@/lib/table-data";
 import { recordAggregateExport } from "@/lib/analytics/export-actions";
 import { cn } from "@/lib/utils";
+import { usePermissions } from "@/components/auth/permissions-provider";
+import { can } from "@/lib/auth/permissions";
+
+/** Renders only when the viewer's role may export chart data (CSV downloads are audited). */
+export function IfCanExport({ children }: { children: React.ReactNode }) {
+  return can(usePermissions(), "export.aggregate") ? children : null;
+}
 
 /**
  * Card wrapper for every chart: title, method note, and a Chart/Table toggle.
@@ -96,9 +103,13 @@ export function ChartCard({
             </Button>
           )}
           {table && (
-            <Button variant="ghost" size="icon" className="size-7" onClick={downloadCsv} aria-label="Download data as CSV" title="Download CSV">
-              <Download className="size-3.5" />
-            </Button>
+            <Suspense fallback={null}>
+              <IfCanExport>
+                <Button variant="ghost" size="icon" className="size-7" onClick={downloadCsv} aria-label="Download data as CSV" title="Download CSV">
+                  <Download className="size-3.5" />
+                </Button>
+              </IfCanExport>
+            </Suspense>
           )}
         </CardAction>
       </CardHeader>

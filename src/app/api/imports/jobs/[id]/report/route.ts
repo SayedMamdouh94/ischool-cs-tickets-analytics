@@ -1,4 +1,4 @@
-import { checkViewer } from "@/lib/auth/dal";
+import { checkPermission } from "@/lib/auth/dal";
 import { createClient } from "@/lib/supabase/server";
 import { callRpc } from "@/lib/supabase/rpc";
 import { validationReportCsv, type ReportIssue } from "@/lib/imports/report";
@@ -9,8 +9,8 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const PAGE = 5000;
 
 export async function GET(_request: Request, ctx: RouteContext<"/api/imports/jobs/[id]/report">) {
-  const access = await checkViewer("admin");
-  if (!access.ok) return Response.json({ error: "Administrator role required" }, { status: access.status });
+  const access = await checkPermission("imports.manage");
+  if (!access.ok) return Response.json({ error: "The Run imports permission is required" }, { status: access.status });
   const { id } = await ctx.params;
   if (!UUID.test(id)) return Response.json({ error: "Not found" }, { status: 404 });
 

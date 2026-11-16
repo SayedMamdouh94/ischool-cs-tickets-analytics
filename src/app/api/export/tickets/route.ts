@@ -1,5 +1,5 @@
 import { type NextRequest } from "next/server";
-import { checkViewer } from "@/lib/auth/dal";
+import { checkPermission } from "@/lib/auth/dal";
 import { createClient } from "@/lib/supabase/server";
 import { getFilterOptions, getSettings } from "@/lib/analytics/queries";
 import { parseFilters, resolveDateRange, toRpcFilters, toRpcScope } from "@/lib/filters/schema";
@@ -7,8 +7,9 @@ import { csvEscape } from "@/lib/table-data";
 import { callRpc } from "@/lib/supabase/rpc";
 
 /**
- * Filtered ticket export (CSV). Administrators only — enforced here and again
- * by export_tickets_page() in PostgreSQL. Streams keyset-paginated pages of
+ * Filtered ticket export (CSV). Needs the export.tickets permission (and
+ * tickets.read_content for message text) — enforced here and again by
+ * export_tickets_page() in PostgreSQL, which also applies the project scope. Streams keyset-paginated pages of
  * 1,000 rows so large selections never sit in memory, and records an audit event.
  */
 const COLUMNS = [
@@ -38,13 +39,14 @@ const TEXT_COLUMNS = ["message", "response", "note"] as const;
 const MAX_ROWS = 200_000;
 
 export async function GET(request: NextRequest) {
-  const access = await checkViewer("admin");
-  if (!access.ok) {
-    return Response.json({ error: access.status === 401 ? "Authentication required" : "Administrator role required" }, { status: access.status });
-  }
-
   const params = request.nextUrl.searchParams;
   const includeText = params.get("include_text") === "1";
+  const access = includeText ? await checkPermission("export.tickets", "tickets.read_content") : await checkPermission("export.tickets");
+  if (!access.ok) {
+    const missing = includeText ? "The Export ticket rows and Read message text permissions are required" : "The Export ticket rows permission is required";
+    return Response.json({ error: access.status === 401 ? "Authentication required" : missing }, { status: access.status });
+  }
+
   const filters = parseFilters(params);
   const [options, settings] = await Promise.all([getFilterOptions(toRpcScope(filters)), getSettings()]);
   const range = resolveDateRange(filters, { datasetMax: options.date_range.max, anchor: settings.app.date_preset_anchor === "today" ? "today" : "dataset_end" });

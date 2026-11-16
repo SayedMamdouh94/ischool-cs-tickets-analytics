@@ -8,7 +8,7 @@ export default function NotFound() {
       <h1 className="text-xl font-semibold">Page not found</h1>
       <p className="max-w-sm text-sm text-muted-foreground">The page or record you are looking for does not exist or is not available to your account.</p>
       <Button asChild variant="outline">
-        <Link href="/overview">Back to the overview</Link>
+        <Link href="/">Back to the dashboard</Link>
       </Button>
     </main>
   );

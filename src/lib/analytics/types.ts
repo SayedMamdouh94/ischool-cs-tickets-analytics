@@ -521,11 +521,28 @@ export interface ProjectHistoryEntry {
 export interface AppUser {
   user_id: string;
   email: string;
-  role: "admin" | "analyst" | null;
+  /** Role code (public.app_roles), null without access. */
+  role: string | null;
+  role_name: string | null;
+  all_projects: boolean;
+  programs: string[];
+  project_codes: string[];
   created_at: string;
   last_sign_in_at: string | null;
   email_confirmed_at: string | null;
   invited_at: string | null;
+}
+
+export interface AppRoleSummary {
+  code: string;
+  name: string;
+  description: string | null;
+  permissions: string[];
+  is_system: boolean;
+  /** false for the Administrator role, which always has every permission. */
+  editable: boolean;
+  users: number;
+  updated_at: string;
 }
 
 export interface AuditEvent {

@@ -12,7 +12,7 @@ import { TrendChart } from "@/components/charts/trend-chart";
 import { BarListChart } from "@/components/charts/bar-list-chart";
 import { projectColor, STATUS_COLORS } from "@/components/charts/colors";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { requireViewer } from "@/lib/auth/dal";
+import { requirePermission } from "@/lib/auth/dal";
 import {
   getGroupedMetrics,
   getImportRuns,
@@ -43,7 +43,7 @@ export default function OverviewPage({ searchParams }: PageProps<"/overview">) {
 }
 
 async function OverviewContent({ searchParams }: { searchParams: Promise<SearchParamsRecord> }) {
-  await requireViewer();
+  await requirePermission("page.overview");
   const ctx = await resolveFilterContext(await searchParams);
   const spanDays =
     ctx.range.from && ctx.range.to

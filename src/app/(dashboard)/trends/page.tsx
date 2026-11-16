@@ -10,7 +10,7 @@ import { WeekdayHourHeatmap } from "@/components/charts/heatmap";
 import { ACCENT, INTAKE_GROUP_COLORS, PROGRAM_COLORS, SERIES_COLORS, projectColor } from "@/components/charts/colors";
 import { DataTable } from "@/components/dashboard/data-table";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { requireViewer } from "@/lib/auth/dal";
+import { requirePermission } from "@/lib/auth/dal";
 import { getPeriodComparison, getSettings, getVolumeSeries, getWeekdayHour, resolveFilterContext } from "@/lib/analytics/queries";
 import { detectProjectSpikes } from "@/lib/analytics/anomalies";
 import { describePeriods, rulesFrom } from "@/lib/analytics/insights";
@@ -40,7 +40,7 @@ export default function TrendsPage({ searchParams }: PageProps<"/trends">) {
 }
 
 async function TrendsContent({ searchParams }: { searchParams: Promise<SearchParamsRecord> }) {
-  await requireViewer();
+  await requirePermission("page.trends");
   const sp = await searchParams;
   const ctx = await resolveFilterContext(sp);
   const grain = pickParam(sp, "grain", GRAINS, "week") as Grain;

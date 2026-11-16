@@ -39,8 +39,17 @@ export async function anonClient(): Promise<SupabaseClient> {
   return createClient(SUPABASE_URL, PUBLISHABLE_KEY, { auth: { persistSession: false } });
 }
 
-/** Creates (or reuses) a confirmed user with an optional application role and returns a signed-in client. */
-export async function userClient(email: string, role: "admin" | "analyst" | null): Promise<{ client: SupabaseClient; userId: string }> {
+/** Project access for a test account; omitted = all projects. */
+export interface TestScope {
+  programs?: string[];
+  projects?: string[];
+}
+
+/**
+ * Creates (or reuses) a confirmed user with an optional application role
+ * (any public.app_roles code) and project scope, and returns a signed-in client.
+ */
+export async function userClient(email: string, role: string | null, scope?: TestScope): Promise<{ client: SupabaseClient; userId: string }> {
   const password = "Integration#Test2026";
   const db = sql();
   try {
@@ -51,7 +60,17 @@ export async function userClient(email: string, role: "admin" | "analyst" | null
       u = { id: data.user.id };
     }
     if (role) {
-      await db`insert into public.user_roles (user_id, role) values (${u.id}, ${role}) on conflict (user_id) do update set role = excluded.role`;
+      const all = !scope;
+      await db`insert into public.user_roles (user_id, role, all_projects) values (${u.id}, ${role}, ${all})
+               on conflict (user_id) do update set role = excluded.role, all_projects = excluded.all_projects`;
+      await db`delete from public.user_program_access where user_id = ${u.id}`;
+      await db`delete from public.user_project_access where user_id = ${u.id}`;
+      for (const program of scope?.programs ?? []) {
+        await db`insert into public.user_program_access (user_id, program) values (${u.id}, ${program})`;
+      }
+      for (const code of scope?.projects ?? []) {
+        await db`insert into public.user_project_access (user_id, project_id) select ${u.id}, id from public.projects where code = ${code}`;
+      }
     } else {
       await db`delete from public.user_roles where user_id = ${u.id}`;
     }

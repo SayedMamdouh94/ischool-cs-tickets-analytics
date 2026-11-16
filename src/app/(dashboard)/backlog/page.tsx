@@ -15,7 +15,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { requireViewer } from "@/lib/auth/dal";
+import { requirePermission } from "@/lib/auth/dal";
 import { getBacklog, getDurationHistogram, getGroupedMetrics, resolveFilterContext } from "@/lib/analytics/queries";
 import { metricsTable } from "@/lib/analytics/tables";
 import { hrefWithFilters, type SearchParamsRecord } from "@/lib/filters/schema";
@@ -37,7 +37,7 @@ export default function BacklogPage({ searchParams }: PageProps<"/backlog">) {
 }
 
 async function BacklogContent({ searchParams }: { searchParams: Promise<SearchParamsRecord> }) {
-  await requireViewer();
+  await requirePermission("page.backlog");
   const ctx = await resolveFilterContext(await searchParams);
   const [overallM, projectsM, topicsM, backlog, histogram] = await Promise.all([
     getGroupedMetrics(ctx.rpc, "none"),

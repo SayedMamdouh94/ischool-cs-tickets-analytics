@@ -1,11 +1,12 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { Suspense } from "react";
-import { Lock, X } from "lucide-react";
+import { X } from "lucide-react";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { DataTable } from "@/components/dashboard/data-table";
 import { PageSkeleton } from "@/components/dashboard/states";
-import { AccessManager, InsightRulesForm, PreferencesForm, ThresholdForm } from "@/components/settings/forms";
+import { InsightRulesForm, PreferencesForm, ThresholdForm } from "@/components/settings/forms";
+import { AccessPanel } from "@/components/settings/access-panel";
 import { CategoriesPanel } from "@/components/settings/categories-panel";
 import { ImportWizard, TemplateCard } from "@/components/settings/import-wizard";
 import { ProjectsPanel } from "@/components/settings/projects-panel";
@@ -15,8 +16,9 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { requireViewer } from "@/lib/auth/dal";
-import { getAuditEvents, getImportJobs, getImportRuns, getSettings, getStatusValues, getTopicMappings, listAppUsers } from "@/lib/analytics/queries";
+import { requirePermission } from "@/lib/auth/dal";
+import { getAuditEvents, getImportJobs, getImportRuns, getSettings, getStatusValues, getTopicMappings, listAppRoles, listAppUsers } from "@/lib/analytics/queries";
+import { can } from "@/lib/auth/permissions";
 import { hasAdminCredentials } from "@/lib/supabase/admin";
 import { ACTIVE_JOB_STATUSES } from "@/lib/imports/types";
 import { pickString } from "@/lib/search-params";
@@ -45,23 +47,31 @@ export default function SettingsPage({ searchParams }: PageProps<"/settings">) {
 }
 
 async function SettingsContent({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
-  const viewer = await requireViewer();
-  const isAdmin = viewer.role === "admin";
+  const viewer = await requirePermission("page.settings");
+  const perms = viewer.permissions;
+  const isAdmin = viewer.isAdmin;
+  const canImport = can(perms, "imports.manage");
+  const canAudit = can(perms, "audit.view");
+  const canEditSettings = can(perms, "settings.manage");
+  // Tabs the viewer's role cannot use are not rendered at all.
+  const visibleTabs = TABS.filter((t) => (t === "access" ? isAdmin : t === "audit" ? canAudit : true));
   const sp = await searchParams;
   const requested = pickString(sp, "tab", 20) as Tab | undefined;
-  const tab: Tab = requested && TABS.includes(requested) && (isAdmin || (requested !== "access" && requested !== "audit")) ? requested : "projects";
+  const tab: Tab = requested && visibleTabs.includes(requested) ? requested : "projects";
   const preselect = pickString(sp, "project", 40);
   const historyFilter = pickString(sp, "history", 40);
 
-  const [settings, runs, jobs, mappings, statuses, users, audit] = await Promise.all([
+  const [settings, runs, jobs, mappings, statuses, users, roles, audit] = await Promise.all([
     getSettings(),
     getImportRuns(200),
-    isAdmin ? getImportJobs(100) : Promise.resolve([]),
+    canImport ? getImportJobs(100) : Promise.resolve([]),
     getTopicMappings(),
     getStatusValues(),
     isAdmin ? listAppUsers() : Promise.resolve([]),
-    isAdmin ? getAuditEvents(200) : Promise.resolve([]),
+    isAdmin ? listAppRoles() : Promise.resolve([]),
+    canAudit ? getAuditEvents(200) : Promise.resolve([]),
   ]);
+  const readOnly = !(["projects.manage", "imports.manage", "categories.manage", "settings.manage"] as const).some((k) => can(perms, k));
 
   const unmapped = mappings.topics.filter((t) => !t.mapped && t.tickets > 0).length + statuses.filter((s) => !s.configured && s.tickets > 0).length;
   const activeJobs = jobs.filter((j) => ACTIVE_JOB_STATUSES.includes(j.status) && j.status !== "awaiting_upload");
@@ -91,22 +101,18 @@ async function SettingsContent({ searchParams }: { searchParams: Promise<Record<
         </TabsTrigger>
         <TabsTrigger value="thresholds">Thresholds</TabsTrigger>
         <TabsTrigger value="preferences">Preferences</TabsTrigger>
-        <TabsTrigger value="access" disabled={!isAdmin}>
-          {!isAdmin && <Lock className="size-3" />} Access
-        </TabsTrigger>
-        <TabsTrigger value="audit" disabled={!isAdmin}>
-          {!isAdmin && <Lock className="size-3" />} Audit log
-        </TabsTrigger>
+        {isAdmin && <TabsTrigger value="access">Roles &amp; access</TabsTrigger>}
+        {canAudit && <TabsTrigger value="audit">Audit log</TabsTrigger>}
       </TabsList>
 
-      {!isAdmin && <p className="text-xs text-muted-foreground">You have the analyst role: settings are read-only, and imports are performed by administrators.</p>}
+      {readOnly && <p className="text-xs text-muted-foreground">Your role can view these settings but not change them.</p>}
 
       <TabsContent value="projects">
-        <ProjectsPanel cycles={settings.cycles} projects={settings.projects} isAdmin={isAdmin} />
+        <ProjectsPanel cycles={settings.cycles} projects={settings.projects} permissions={perms} />
       </TabsContent>
 
       <TabsContent value="imports" className="flex flex-col gap-4">
-        {isAdmin && (
+        {canImport && (
           <>
             {!hasAdminCredentials() && (
               <p role="alert" className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-900 dark:text-amber-200">
@@ -118,7 +124,7 @@ async function SettingsContent({ searchParams }: { searchParams: Promise<Record<
           </>
         )}
 
-        {isAdmin && (activeJobs.length > 0 || recentJobs.length > 0) && (
+        {canImport && (activeJobs.length > 0 || recentJobs.length > 0) && (
           <Card className="shadow-xs">
             <CardHeader>
               <CardTitle className="text-sm font-semibold">Imports in progress and recent attempts</CardTitle>
@@ -247,7 +253,7 @@ async function SettingsContent({ searchParams }: { searchParams: Promise<Record<
                         <Link href={`/settings/imports/${r.id}`} className="font-medium hover:underline">
                           Run
                         </Link>
-                        {isAdmin && r.job_id && (
+                        {canImport && r.job_id && (
                           <>
                             {" · "}
                             <Link href={`/settings/imports/jobs/${r.job_id}`} className="font-medium hover:underline">
@@ -266,7 +272,7 @@ async function SettingsContent({ searchParams }: { searchParams: Promise<Record<
       </TabsContent>
 
       <TabsContent value="categories">
-        <CategoriesPanel mappings={mappings} statuses={statuses} isAdmin={isAdmin} />
+        <CategoriesPanel mappings={mappings} statuses={statuses} canManage={can(perms, "categories.manage")} />
       </TabsContent>
 
       <TabsContent value="thresholds" className="flex flex-col gap-4">
@@ -278,7 +284,7 @@ async function SettingsContent({ searchParams }: { searchParams: Promise<Record<
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <ThresholdForm thresholds={settings.thresholds} disabled={!isAdmin} />
+            <ThresholdForm thresholds={settings.thresholds} disabled={!canEditSettings} />
           </CardContent>
         </Card>
         <Card className="shadow-xs">
@@ -289,7 +295,7 @@ async function SettingsContent({ searchParams }: { searchParams: Promise<Record<
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <InsightRulesForm rules={settings.insight_rules} disabled={!isAdmin} />
+            <InsightRulesForm rules={settings.insight_rules} disabled={!canEditSettings} />
           </CardContent>
         </Card>
       </TabsContent>
@@ -300,7 +306,7 @@ async function SettingsContent({ searchParams }: { searchParams: Promise<Record<
             <CardTitle className="text-sm font-semibold">Application preferences</CardTitle>
           </CardHeader>
           <CardContent>
-            <PreferencesForm app={settings.app} disabled={!isAdmin} />
+            <PreferencesForm app={settings.app} disabled={!canEditSettings} />
           </CardContent>
         </Card>
       </TabsContent>
@@ -309,17 +315,25 @@ async function SettingsContent({ searchParams }: { searchParams: Promise<Record<
         <TabsContent value="access">
           <Card className="shadow-xs">
             <CardHeader>
-              <CardTitle className="text-sm font-semibold">Access management</CardTitle>
-              <CardDescription className="text-xs">Roles are enforced in PostgreSQL. At least one administrator must always remain.</CardDescription>
+              <CardTitle className="text-sm font-semibold">Roles &amp; access</CardTitle>
+              <CardDescription className="text-xs">Roles, permissions and project access are enforced in PostgreSQL. At least one administrator must always remain.</CardDescription>
             </CardHeader>
             <CardContent>
-              <AccessManager users={users} currentUserId={viewer.userId} canInvite={hasAdminCredentials()} />
+              <AccessPanel
+                users={users}
+                roles={roles}
+                projects={settings.projects
+                  .filter((pr) => pr.status !== "draft")
+                  .map((pr) => ({ code: pr.code, name: pr.name, program: pr.program, status: pr.status, cycle_name: pr.cycle_name }))}
+                currentUserId={viewer.userId}
+                canInvite={hasAdminCredentials()}
+              />
             </CardContent>
           </Card>
         </TabsContent>
       )}
 
-      {isAdmin && (
+      {canAudit && (
         <TabsContent value="audit">
           <Card className="shadow-xs">
             <CardHeader>
